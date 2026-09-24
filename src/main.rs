@@ -12,6 +12,14 @@ use bevy::{
 };
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
 
+#[derive(Clone, Copy)]
+struct CameraAnglePreset {
+    button_label: &'static str,
+    label: &'static str,
+    rotation: Vec3,
+    key: KeyCode,
+}
+
 #[derive(PartialEq, Clone, Copy)]
 enum ViewMode {
     Orthogonal,
@@ -35,6 +43,7 @@ struct AppState {
     hovered_point: Option<Vec3>,
     hovered_edge: Option<(Vec3, Vec3)>,
     hovered_area: Option<[Vec3; 3]>,
+    camera_angle_presets: [CameraAnglePreset; 6],
 }
 
 impl Default for AppState {
@@ -48,6 +57,44 @@ impl Default for AppState {
             hovered_point: None,
             hovered_edge: None,
             hovered_area: None,
+            camera_angle_presets: [
+                CameraAnglePreset {
+                    button_label: "l",
+                    label: "left",
+                    rotation: Vec3::new(90.0, 0.0, 270.0),
+                    key: KeyCode::Digit1,
+                },
+                CameraAnglePreset {
+                    button_label: "t",
+                    label: "top",
+                    rotation: Vec3::new(0.0, 0.0, 0.0),
+                    key: KeyCode::Digit2,
+                },
+                CameraAnglePreset {
+                    button_label: "b",
+                    label: "bottom",
+                    rotation: Vec3::new(180.0, 0.0, 0.0),
+                    key: KeyCode::Digit3,
+                },
+                CameraAnglePreset {
+                    button_label: "r",
+                    label: "right",
+                    rotation: Vec3::new(90.0, 0.0, 90.0),
+                    key: KeyCode::Digit4,
+                },
+                CameraAnglePreset {
+                    button_label: "f",
+                    label: "front",
+                    rotation: Vec3::new(90.0, 0.0, 0.0),
+                    key: KeyCode::Digit5,
+                },
+                CameraAnglePreset {
+                    button_label: "b",
+                    label: "back",
+                    rotation: Vec3::new(90.0, 0.0, 180.0),
+                    key: KeyCode::Digit6,
+                },
+            ],
         }
     }
 }
@@ -567,6 +614,12 @@ fn ui_system(
             view_pan_delta.z -= pan_speed;
         }
     } else {
+        for preset in state.camera_angle_presets {
+            if keys.pressed(preset.key) {
+                state.camera_rotation = preset.rotation;
+            }
+        }
+
         if keys.pressed(KeyCode::Numpad1) {
             delta_rot = Quat::from_axis_angle(Vec3::Y, -rot_speed.to_radians()) * delta_rot;
         }
@@ -644,36 +697,20 @@ fn ui_system(
         ui.add_space(3.0);
 
         ui.horizontal(|ui| {
-            if ui.button("l").clicked() {
-                state.camera_rotation.x = 90.0;
-                state.camera_rotation.y = 0.0;
-                state.camera_rotation.z = 270.0;
+            // camera angle presets
+            for preset in state.camera_angle_presets {
+                let tooltip_text = format!("Shortcut: {:?}", preset.key);
+
+                if ui
+                    .button(preset.button_label)
+                    .on_hover_text(tooltip_text)
+                    .clicked()
+                {
+                    state.camera_rotation = preset.rotation;
+                }
             }
-            if ui.button("t").clicked() {
-                state.camera_rotation.x = 0.0;
-                state.camera_rotation.y = 0.0;
-                state.camera_rotation.z = 0.0;
-            }
-            if ui.button("b").clicked() {
-                state.camera_rotation.x = 180.0;
-                state.camera_rotation.y = 0.0;
-                state.camera_rotation.z = 0.0;
-            }
-            if ui.button("r").clicked() {
-                state.camera_rotation.x = 90.0;
-                state.camera_rotation.y = 0.0;
-                state.camera_rotation.z = 90.0;
-            }
-            if ui.button("f").clicked() {
-                state.camera_rotation.x = 90.0;
-                state.camera_rotation.y = 0.0;
-                state.camera_rotation.z = 0.0;
-            }
-            if ui.button("b").clicked() {
-                state.camera_rotation.x = 90.0;
-                state.camera_rotation.y = 0.0;
-                state.camera_rotation.z = 180.0;
-            }
+
+            // view mode
             if ui.button("p").clicked() {
                 state.view_mode = ViewMode::Perspective;
                 *projection = Projection::Perspective(PerspectiveProjection::default());
