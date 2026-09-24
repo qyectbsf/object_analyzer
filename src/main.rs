@@ -27,12 +27,8 @@ enum SelectionMode {
 }
 
 struct AppState {
-    rotation_x: f32,
-    rotation_y: f32,
-    rotation_z: f32,
-    pos_x: f32,
-    pos_y: f32,
-    pos_z: f32,
+    camera_rotation: Vec3,
+    camera_position: Vec3,
     zoom: f32,
     view_mode: ViewMode,
     selection_mode: SelectionMode,
@@ -44,12 +40,8 @@ struct AppState {
 impl Default for AppState {
     fn default() -> Self {
         AppState {
-            rotation_x: 0.0,
-            rotation_y: 0.0,
-            rotation_z: 0.0,
-            pos_x: 0.0,
-            pos_y: 0.0,
-            pos_z: 0.0,
+            camera_rotation: Vec3::ZERO,
+            camera_position: Vec3::ZERO,
             zoom: 5.0,
             view_mode: ViewMode::Orthogonal,
             selection_mode: SelectionMode::None,
@@ -496,16 +488,16 @@ fn ui_system(
     // Compute current rotation at the start of the frame so panning calculates correctly
     let current_rotation = Quat::from_euler(
         EulerRot::XYZ,
-        -state.rotation_x.to_radians(),
-        state.rotation_y.to_radians(),
-        -state.rotation_z.to_radians(),
+        -state.camera_rotation.x.to_radians(),
+        state.camera_rotation.y.to_radians(),
+        -state.camera_rotation.z.to_radians(),
     );
 
     let rot_speed = 90.0 * time.delta_seconds();
     let pan_speed = state.zoom * time.delta_seconds();
 
     let mut delta_rot = Quat::IDENTITY;
-    let mut view_pan_delta = Vec3::ZERO; // Represents desired screen-space mouse movement
+    let mut view_pan_delta = Vec3::ZERO;
     let mut zoom_delta = 0.0;
 
     let mouse_zoom_speed = 0.2;
@@ -598,9 +590,7 @@ fn ui_system(
     // Transform the 2D view-space pan into a 3D focal offset using the inverse rotation
     if view_pan_delta != Vec3::ZERO {
         let dp = current_rotation.inverse() * -view_pan_delta;
-        state.pos_x += dp.x;
-        state.pos_y += dp.y;
-        state.pos_z += dp.z;
+        state.camera_position += dp;
     }
 
     if let Projection::Orthographic(ortho) = &mut *projection {
@@ -608,23 +598,27 @@ fn ui_system(
     }
 
     // TODO: understand why this is here
-    cam_transform.translation = Vec3::new(state.pos_x, state.pos_y, state.pos_z + state.zoom);
+    cam_transform.translation = Vec3::new(
+        state.camera_position.x,
+        state.camera_position.y,
+        state.camera_position.z + state.zoom,
+    );
 
     if delta_rot != Quat::IDENTITY {
         let new_rot = delta_rot * current_rotation;
         let (ex, ey, ez) = new_rot.to_euler(EulerRot::XYZ);
 
-        state.rotation_x = -ex.to_degrees();
-        state.rotation_y = ey.to_degrees();
-        state.rotation_z = -ez.to_degrees();
+        state.camera_rotation.x = -ex.to_degrees();
+        state.camera_rotation.y = ey.to_degrees();
+        state.camera_rotation.z = -ez.to_degrees();
     }
 
     // Recompute target_rotation in case mouse dragging changed it this frame
     let target_rotation = Quat::from_euler(
         EulerRot::XYZ,
-        -state.rotation_x.to_radians(),
-        state.rotation_y.to_radians(),
-        -state.rotation_z.to_radians(),
+        -state.camera_rotation.x.to_radians(),
+        state.camera_rotation.y.to_radians(),
+        -state.camera_rotation.z.to_radians(),
     );
 
     // display top panel buttons
@@ -651,34 +645,34 @@ fn ui_system(
 
         ui.horizontal(|ui| {
             if ui.button("l").clicked() {
-                state.rotation_x = 90.0;
-                state.rotation_y = 0.0;
-                state.rotation_z = 270.0;
+                state.camera_rotation.x = 90.0;
+                state.camera_rotation.y = 0.0;
+                state.camera_rotation.z = 270.0;
             }
             if ui.button("t").clicked() {
-                state.rotation_x = 0.0;
-                state.rotation_y = 0.0;
-                state.rotation_z = 0.0;
+                state.camera_rotation.x = 0.0;
+                state.camera_rotation.y = 0.0;
+                state.camera_rotation.z = 0.0;
             }
             if ui.button("b").clicked() {
-                state.rotation_x = 180.0;
-                state.rotation_y = 0.0;
-                state.rotation_z = 0.0;
+                state.camera_rotation.x = 180.0;
+                state.camera_rotation.y = 0.0;
+                state.camera_rotation.z = 0.0;
             }
             if ui.button("r").clicked() {
-                state.rotation_x = 90.0;
-                state.rotation_y = 0.0;
-                state.rotation_z = 90.0;
+                state.camera_rotation.x = 90.0;
+                state.camera_rotation.y = 0.0;
+                state.camera_rotation.z = 90.0;
             }
             if ui.button("f").clicked() {
-                state.rotation_x = 90.0;
-                state.rotation_y = 0.0;
-                state.rotation_z = 0.0;
+                state.camera_rotation.x = 90.0;
+                state.camera_rotation.y = 0.0;
+                state.camera_rotation.z = 0.0;
             }
             if ui.button("b").clicked() {
-                state.rotation_x = 90.0;
-                state.rotation_y = 0.0;
-                state.rotation_z = 180.0;
+                state.camera_rotation.x = 90.0;
+                state.camera_rotation.y = 0.0;
+                state.camera_rotation.z = 180.0;
             }
             if ui.button("p").clicked() {
                 state.view_mode = ViewMode::Perspective;
@@ -706,13 +700,13 @@ fn ui_system(
         ui.horizontal(|ui| {
             ui.label(format!(
                 "pos: [{:.1},{:.1},{:.1}]",
-                state.pos_x, state.pos_y, state.pos_z
+                state.camera_position.x, state.camera_position.y, state.camera_position.z
             ));
             ui.label(format!(
                 "rot: [{:.0},{:.0},{:.0}]",
-                state.rotation_x.rem_euclid(360.0),
-                state.rotation_y.rem_euclid(360.0),
-                state.rotation_z.rem_euclid(360.0)
+                state.camera_rotation.x.rem_euclid(360.0),
+                state.camera_rotation.y.rem_euclid(360.0),
+                state.camera_rotation.z.rem_euclid(360.0)
             ));
             ui.label(format!("zoom: {:.1}", state.zoom));
             ui.separator();
@@ -806,7 +800,7 @@ fn ui_system(
     });
 
     // Calculate the mathematical pivot center for the camera and the world
-    let focal_point = Vec3::new(state.pos_x, state.pos_y, state.pos_z);
+    let focal_point = state.camera_position;
 
     // The cube and axes naturally rest at (0,0,0). Orbit that origin point around the focal point.
     let world_origin = focal_point + target_rotation * (-focal_point);
