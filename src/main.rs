@@ -7,7 +7,7 @@ use bevy::{
         render_resource::{
             Extent3d, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages,
         },
-        view::RenderLayers,
+        view::{NoFrustumCulling, RenderLayers},
     },
 };
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
@@ -71,7 +71,7 @@ impl Default for AppState {
                     key: KeyCode::Digit2,
                 },
                 CameraAnglePreset {
-                    button_label: "b",
+                    button_label: "bo",
                     label: "bottom",
                     rotation: Vec3::new(180.0, 0.0, 0.0),
                     key: KeyCode::Digit3,
@@ -89,7 +89,7 @@ impl Default for AppState {
                     key: KeyCode::Digit5,
                 },
                 CameraAnglePreset {
-                    button_label: "b",
+                    button_label: "ba",
                     label: "back",
                     rotation: Vec3::new(90.0, 0.0, 180.0),
                     key: KeyCode::Digit6,
@@ -106,16 +106,16 @@ struct ViewportImage(Handle<Image>);
 struct CompassImage(Handle<Image>);
 
 #[derive(Component)]
-struct RotatableCube;
+struct ImportedObject {
+    name: String,
+    euler_angles: Vec3,
+}
 
 #[derive(Component)]
 struct MainCamera;
 
 #[derive(Component)]
-struct AxisMarker {
-    local_pos: Vec3,
-    base_rotation: Quat,
-}
+struct CompassCamera;
 
 #[derive(Component)]
 struct CompassAxis {
@@ -128,7 +128,6 @@ struct CompassLabel {
     local_pos: Vec3,
 }
 
-// Helper: Möller–Trumbore ray-triangle intersection
 fn ray_triangle_intersect(
     ray_origin: Vec3,
     ray_dir: Vec3,
@@ -165,7 +164,6 @@ fn ray_triangle_intersect(
     }
 }
 
-// Helper: Closest point on a line segment to a target point
 fn closest_point_on_segment(p: Vec3, a: Vec3, b: Vec3) -> Vec3 {
     let ab = b - a;
     let t = ((p - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0);
@@ -178,16 +176,16 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let size = Extent3d {
+    // main camera configuration
+    let main_camera_size = Extent3d {
         width: 512,
         height: 512,
         ..default()
     };
-
-    let mut image = Image {
+    let mut main_camera_image = Image {
         texture_descriptor: TextureDescriptor {
             label: None,
-            size,
+            size: main_camera_size,
             dimension: TextureDimension::D2,
             format: TextureFormat::Bgra8UnormSrgb,
             mip_level_count: 1,
@@ -199,46 +197,20 @@ fn setup(
         },
         ..default()
     };
-
-    image.resize(size);
-    let image_handle = images.add(image);
-    commands.insert_resource(ViewportImage(image_handle.clone()));
-
-    // spawn the central test cube
-    commands.spawn((
-        PbrBundle {
-            mesh: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
-            material: materials.add(Color::srgb(0.8, 0.3, 0.3)),
-            transform: Transform::from_xyz(0.0, 0.0, 0.0).with_rotation(Quat::from_euler(
-                EulerRot::XYZ,
-                0.0_f32.to_radians(),
-                0.0_f32.to_radians(),
-                0.0_f32.to_radians(),
-            )),
-            ..default()
-        },
-        RotatableCube,
-    ));
-
-    // spawn light
-    commands.spawn(PointLightBundle {
-        point_light: PointLight {
-            shadows_enabled: true,
-            ..default()
-        },
-        transform: Transform::from_xyz(4.0, 8.0, 4.0),
-        ..default()
-    });
+    main_camera_image.resize(main_camera_size);
+    let main_camera_handle = images.add(main_camera_image);
+    commands.insert_resource(ViewportImage(main_camera_handle.clone()));
 
     // spawn main camera
     commands.spawn((
         Camera3dBundle {
             camera: Camera {
-                target: RenderTarget::Image(image_handle),
+                target: RenderTarget::Image(main_camera_handle),
                 ..default()
             },
             projection: Projection::Orthographic(OrthographicProjection {
                 scaling_mode: ScalingMode::FixedVertical(5.0),
+                far: 100000.0,
                 ..default()
             }),
             transform: Transform::from_xyz(0.0, 0.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
@@ -247,17 +219,17 @@ fn setup(
         MainCamera,
     ));
 
-    // TODO: i may need a 2nd scene for this
+    // compass camera configuration
     let compass_center = Vec3::new(0.0, 100.0, 0.0);
-    let compass_size = Extent3d {
+    let compass_camera_size = Extent3d {
         width: 128,
         height: 128,
         ..default()
     };
-    let mut compass_img = Image {
+    let mut compass_camera_image = Image {
         texture_descriptor: TextureDescriptor {
             label: None,
-            size: compass_size,
+            size: compass_camera_size,
             dimension: TextureDimension::D2,
             format: TextureFormat::Bgra8UnormSrgb,
             mip_level_count: 1,
@@ -269,15 +241,15 @@ fn setup(
         },
         ..default()
     };
-    compass_img.resize(compass_size);
-    let compass_handle = images.add(compass_img);
-    commands.insert_resource(CompassImage(compass_handle.clone()));
+    compass_camera_image.resize(compass_camera_size);
+    let compass_camera_handle = images.add(compass_camera_image);
+    commands.insert_resource(CompassImage(compass_camera_handle.clone()));
 
     // spawn compass camera
     commands.spawn((
         Camera3dBundle {
             camera: Camera {
-                target: RenderTarget::Image(compass_handle.clone()),
+                target: RenderTarget::Image(compass_camera_handle.clone()),
                 order: 1,
                 clear_color: ClearColorConfig::Custom(Color::srgba(0.0, 0.0, 0.0, 0.0)),
                 ..default()
@@ -290,13 +262,14 @@ fn setup(
             ..default()
         },
         RenderLayers::layer(1),
+        CompassCamera,
     ));
 
-    // 2d camera the render  axis label of compass camera
+    // spawn compass scene axis label
     commands.spawn((
         Camera2dBundle {
             camera: Camera {
-                target: RenderTarget::Image(compass_handle.clone()),
+                target: RenderTarget::Image(compass_camera_handle.clone()),
                 order: 2,
                 clear_color: ClearColorConfig::None,
                 ..default()
@@ -306,32 +279,34 @@ fn setup(
         RenderLayers::layer(1),
     ));
 
-    // compass axis colour
-    let cx_mat = materials.add(StandardMaterial {
+    // compass axis
+    // ignores light
+    // red x
+    let compass_x_axis_material = materials.add(StandardMaterial {
         base_color: Color::srgb(1.0, 0.0, 0.0),
         unlit: true,
         ..default()
     });
-    let cy_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.0, 0.8, 0.0),
+    // green y
+    let compass_y_axis_material = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.0, 1.0, 0.0),
         unlit: true,
         ..default()
     });
-    let cz_mat = materials.add(StandardMaterial {
+    // blue z
+    let compass_z_axis_material = materials.add(StandardMaterial {
         base_color: Color::srgb(0.0, 0.0, 1.0),
         unlit: true,
         ..default()
     });
-
-    // axis space indicator TODO: select shown indicator based on zoom value
+    // form and dimensions of axis
     let compass_mesh = meshes.add(Cylinder::new(0.015, 0.8));
 
-    // spawn compass axis
-    // x axis
+    // spawn compass x axis
     commands.spawn((
         PbrBundle {
             mesh: compass_mesh.clone(),
-            material: cx_mat,
+            material: compass_x_axis_material,
             transform: Transform::from_rotation(Quat::from_rotation_z(
                 -std::f32::consts::FRAC_PI_2,
             ))
@@ -345,11 +320,11 @@ fn setup(
         NotShadowCaster,
         RenderLayers::layer(1),
     ));
-    // y axis
+    // spawn compass y axis
     commands.spawn((
         PbrBundle {
             mesh: compass_mesh.clone(),
-            material: cy_mat,
+            material: compass_y_axis_material,
             transform: Transform::from_translation(compass_center + Vec3::Y * 0.4),
             ..default()
         },
@@ -360,11 +335,11 @@ fn setup(
         NotShadowCaster,
         RenderLayers::layer(1),
     ));
-    // z axis
+    // spawn compass z axis
     commands.spawn((
         PbrBundle {
             mesh: compass_mesh.clone(),
-            material: cz_mat,
+            material: compass_z_axis_material,
             transform: Transform::from_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2))
                 .with_translation(compass_center + Vec3::Z * 0.4),
             ..default()
@@ -377,16 +352,18 @@ fn setup(
         RenderLayers::layer(1),
     ));
 
-    // axis label
-    let text_style = TextStyle {
-        font_size: 18.0,
-        color: Color::WHITE,
-        ..default()
-    };
+    // spawn compass scene axis label
     for (axis_offset, label) in [(Vec3::X, "X"), (Vec3::Y, "Y"), (Vec3::Z, "Z")] {
         commands.spawn((
             Text2dBundle {
-                text: Text::from_section(label, text_style.clone()),
+                text: Text::from_section(
+                    label,
+                    TextStyle {
+                        font_size: 18.0,
+                        color: Color::WHITE,
+                        ..default()
+                    },
+                ),
                 ..default()
             },
             CompassLabel {
@@ -395,73 +372,10 @@ fn setup(
             RenderLayers::layer(1),
         ));
     }
-
-    // main system axis space indicator colour
-    let mat_x = materials.add(StandardMaterial {
-        base_color: Color::srgba(1.0, 1.0, 1.0, 1.0),
-        alpha_mode: AlphaMode::Blend,
-        ..default()
-    });
-    let mat_y = materials.add(StandardMaterial {
-        base_color: Color::srgba(1.0, 1.0, 1.0, 1.0),
-        alpha_mode: AlphaMode::Blend,
-        ..default()
-    });
-    let mat_z = materials.add(StandardMaterial {
-        base_color: Color::srgba(1.0, 1.0, 1.0, 1.0),
-        alpha_mode: AlphaMode::Blend,
-        ..default()
-    });
-
-    let cyl_mesh = meshes.add(Cylinder::new(0.1, 0.01));
-
-    // TODO: also make this loop bounds dependent an zoom value
-    for i in -20..=20 {
-        if i == 0 {
-            continue;
-        }
-        let val = i as f32;
-
-        commands.spawn((
-            PbrBundle {
-                mesh: cyl_mesh.clone(),
-                material: mat_x.clone(),
-                ..default()
-            },
-            AxisMarker {
-                local_pos: Vec3::X * val,
-                base_rotation: Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
-            },
-            NotShadowCaster,
-        ));
-        commands.spawn((
-            PbrBundle {
-                mesh: cyl_mesh.clone(),
-                material: mat_y.clone(),
-                ..default()
-            },
-            AxisMarker {
-                local_pos: Vec3::Y * val,
-                base_rotation: Quat::IDENTITY,
-            },
-            NotShadowCaster,
-        ));
-        commands.spawn((
-            PbrBundle {
-                mesh: cyl_mesh.clone(),
-                material: mat_z.clone(),
-                ..default()
-            },
-            AxisMarker {
-                local_pos: Vec3::Z * val,
-                base_rotation: Quat::from_rotation_x(std::f32::consts::FRAC_PI_2),
-            },
-            NotShadowCaster,
-        ));
-    }
 }
 
 fn ui_system(
+    mut commands: Commands,
     mut contexts: EguiContexts,
     (viewport, compass_res, time, keys, mouse_buttons): (
         Res<ViewportImage>,
@@ -470,39 +384,40 @@ fn ui_system(
         Res<ButtonInput<KeyCode>>,
         Res<ButtonInput<MouseButton>>,
     ),
-    (mut images, mut materials, meshes): (
+    (mut images, mut materials, mut meshes): (
         ResMut<Assets<Image>>,
         ResMut<Assets<StandardMaterial>>,
-        Res<Assets<Mesh>>,
+        ResMut<Assets<Mesh>>,
     ),
     mut state: Local<AppState>,
     mut mouse_wheel_events: EventReader<bevy::input::mouse::MouseWheel>,
     mut mouse_motion_events: EventReader<bevy::input::mouse::MouseMotion>,
     mut gizmos: Gizmos,
-    mut cube_query: Query<
-        (&mut Transform, &Handle<Mesh>),
+    mut object_query: Query<
         (
-            With<RotatableCube>,
-            Without<AxisMarker>,
-            Without<CompassAxis>,
-            Without<CompassLabel>,
+            Entity,
+            &mut Transform,
+            &mut Visibility,
+            &mut ImportedObject,
+            &Handle<Mesh>,
         ),
+        (Without<Camera>, Without<CompassAxis>, Without<CompassLabel>),
     >,
     mut camera_query: Query<
         (&Camera, &mut Transform, &GlobalTransform, &mut Projection),
         (
             With<MainCamera>,
-            Without<RotatableCube>,
-            Without<AxisMarker>,
             Without<CompassAxis>,
             Without<CompassLabel>,
+            Without<CompassCamera>,
         ),
     >,
-    mut marker_query: Query<
-        (&mut Transform, &AxisMarker, &Handle<StandardMaterial>),
+    mut compass_cam_query: Query<
+        &mut Transform,
         (
-            Without<RotatableCube>,
-            Without<Camera>,
+            With<Camera>,
+            With<CompassCamera>,
+            Without<MainCamera>,
             Without<CompassAxis>,
             Without<CompassLabel>,
         ),
@@ -510,19 +425,17 @@ fn ui_system(
     mut compass_query: Query<
         (&mut Transform, &CompassAxis),
         (
-            Without<RotatableCube>,
             Without<Camera>,
-            Without<AxisMarker>,
             Without<CompassLabel>,
+            Without<ImportedObject>,
         ),
     >,
     mut compass_label_query: Query<
         (&mut Transform, &CompassLabel),
         (
-            Without<RotatableCube>,
             Without<Camera>,
-            Without<AxisMarker>,
             Without<CompassAxis>,
+            Without<ImportedObject>,
         ),
     >,
 ) {
@@ -532,7 +445,6 @@ fn ui_system(
 
     let (camera, mut cam_transform, cam_global, mut projection) = camera_query.single_mut();
 
-    // Compute current rotation at the start of the frame so panning calculates correctly
     let current_rotation = Quat::from_euler(
         EulerRot::XYZ,
         -state.camera_rotation.x.to_radians(),
@@ -579,11 +491,9 @@ fn ui_system(
         let mouse_rot_speed = 0.5;
 
         if ctrl_pressed {
-            // Accumulate desired view-space panning
             view_pan_delta.x += mouse_delta.x * mouse_pan_speed;
             view_pan_delta.y -= mouse_delta.y * mouse_pan_speed;
         } else {
-            // Rotate around the screen's fixed axes (Y is up, X is right)
             delta_rot =
                 Quat::from_axis_angle(Vec3::Y, (mouse_delta.x * mouse_rot_speed).to_radians())
                     * delta_rot;
@@ -593,7 +503,6 @@ fn ui_system(
         }
     }
 
-    // define movement and rotation via keyboard
     if ctrl_pressed {
         if keys.pressed(KeyCode::Numpad1) {
             view_pan_delta.x -= pan_speed;
@@ -608,10 +517,10 @@ fn ui_system(
             view_pan_delta.y += pan_speed;
         }
         if keys.pressed(KeyCode::Numpad7) {
-            view_pan_delta.z += pan_speed;
+            zoom_delta += 2.0 * keyboard_zoom_speed * time.delta_seconds();
         }
         if keys.pressed(KeyCode::Numpad9) {
-            view_pan_delta.z -= pan_speed;
+            zoom_delta -= 2.0 * keyboard_zoom_speed * time.delta_seconds();
         }
     } else {
         for preset in state.camera_angle_presets {
@@ -619,43 +528,38 @@ fn ui_system(
                 state.camera_rotation = preset.rotation;
             }
         }
-
         if keys.pressed(KeyCode::Numpad1) {
-            delta_rot = Quat::from_axis_angle(Vec3::Y, -rot_speed.to_radians()) * delta_rot;
-        }
-        if keys.pressed(KeyCode::Numpad3) {
-            delta_rot = Quat::from_axis_angle(Vec3::Y, rot_speed.to_radians()) * delta_rot;
-        }
-        if keys.pressed(KeyCode::Numpad4) {
-            delta_rot = Quat::from_axis_angle(Vec3::X, rot_speed.to_radians()) * delta_rot;
-        }
-        if keys.pressed(KeyCode::Numpad6) {
             delta_rot = Quat::from_axis_angle(Vec3::X, -rot_speed.to_radians()) * delta_rot;
         }
+        if keys.pressed(KeyCode::Numpad3) {
+            delta_rot = Quat::from_axis_angle(Vec3::X, rot_speed.to_radians()) * delta_rot;
+        }
+        if keys.pressed(KeyCode::Numpad4) {
+            delta_rot = Quat::from_axis_angle(Vec3::Y, -rot_speed.to_radians()) * delta_rot;
+        }
+        if keys.pressed(KeyCode::Numpad6) {
+            delta_rot = Quat::from_axis_angle(Vec3::Y, rot_speed.to_radians()) * delta_rot;
+        }
         if keys.pressed(KeyCode::Numpad7) {
-            delta_rot = Quat::from_axis_angle(Vec3::Z, rot_speed.to_radians()) * delta_rot;
+            delta_rot = Quat::from_axis_angle(Vec3::Z, -rot_speed.to_radians()) * delta_rot;
         }
         if keys.pressed(KeyCode::Numpad9) {
-            delta_rot = Quat::from_axis_angle(Vec3::Z, -rot_speed.to_radians()) * delta_rot;
+            delta_rot = Quat::from_axis_angle(Vec3::Z, rot_speed.to_radians()) * delta_rot;
         }
     }
 
-    // Transform the 2D view-space pan into a 3D focal offset using the inverse rotation
+    if zoom_delta != 0.0 {
+        state.zoom = (state.zoom + zoom_delta).clamp(1.0, 5000.0);
+    }
+
     if view_pan_delta != Vec3::ZERO {
-        let dp = current_rotation.inverse() * -view_pan_delta;
+        let dp = current_rotation * -view_pan_delta;
         state.camera_position += dp;
     }
 
     if let Projection::Orthographic(ortho) = &mut *projection {
         ortho.scaling_mode = ScalingMode::FixedVertical(state.zoom);
     }
-
-    // TODO: understand why this is here
-    cam_transform.translation = Vec3::new(
-        state.camera_position.x,
-        state.camera_position.y,
-        state.camera_position.z + state.zoom,
-    );
 
     if delta_rot != Quat::IDENTITY {
         let new_rot = delta_rot * current_rotation;
@@ -666,7 +570,6 @@ fn ui_system(
         state.camera_rotation.z = -ez.to_degrees();
     }
 
-    // Recompute target_rotation in case mouse dragging changed it this frame
     let target_rotation = Quat::from_euler(
         EulerRot::XYZ,
         -state.camera_rotation.x.to_radians(),
@@ -674,13 +577,95 @@ fn ui_system(
         -state.camera_rotation.z.to_radians(),
     );
 
-    // display top panel buttons
-    // TODO: implement when i reach that point in development
+    cam_transform.rotation = target_rotation;
+    cam_transform.translation =
+        state.camera_position + target_rotation * Vec3::new(0.0, 0.0, state.zoom);
+
+    if let Ok(mut compass_cam_transform) = compass_cam_query.get_single_mut() {
+        let compass_center = Vec3::new(0.0, 100.0, 0.0);
+        compass_cam_transform.rotation = target_rotation;
+        compass_cam_transform.translation =
+            compass_center + target_rotation * Vec3::new(0.0, 0.0, 5.0);
+    }
+
     egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
         ui.add_space(3.0);
         ui.horizontal(|ui| {
-            if ui.button("file").clicked() {
-                println!("file clicked!");
+            if ui.button("Import STL").clicked() {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("STL files", &["stl", "STL"])
+                    .pick_file()
+                {
+                    // Get the file name for the UI label
+                    let file_name = path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
+
+                    if let Ok(mut file) = std::fs::File::open(&path) {
+                        if let Ok(stl) = stl_io::read_stl(&mut file) {
+                            let mut new_mesh = Mesh::new(
+                                bevy::render::render_resource::PrimitiveTopology::TriangleList,
+                                bevy::render::render_asset::RenderAssetUsages::default(),
+                            );
+
+                            let mut positions = Vec::with_capacity(stl.faces.len() * 3);
+                            let mut uvs = Vec::with_capacity(stl.faces.len() * 3);
+                            let mut colors = Vec::with_capacity(stl.faces.len() * 3);
+
+                            for face in stl.faces {
+                                let p0 = stl.vertices[face.vertices[0]];
+                                let p1 = stl.vertices[face.vertices[1]];
+                                let p2 = stl.vertices[face.vertices[2]];
+
+                                let v0 = Vec3::new(p0[0], p0[1], p0[2]);
+                                let v1 = Vec3::new(p1[0], p1[1], p1[2]);
+                                let v2 = Vec3::new(p2[0], p2[1], p2[2]);
+
+                                let normal = (v1 - v0).cross(v2 - v0).normalize_or_zero();
+
+                                let r = 0.5 + (normal.x * 0.5);
+                                let g = 0.5 + (normal.y * 0.5);
+                                let b = 0.5 + (normal.z * 0.5);
+
+                                for i in 0..3 {
+                                    let vertex = stl.vertices[face.vertices[i]];
+                                    positions.push([vertex[0], vertex[1], vertex[2]]);
+                                    uvs.push([0.0, 0.0]);
+                                    colors.push([r, g, b, 1.0]);
+                                }
+                            }
+
+                            new_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+                            new_mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+                            new_mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+                            new_mesh.compute_flat_normals();
+
+                            // ADDED: Spawn the new imported object dynamically
+                            commands.spawn((
+                                PbrBundle {
+                                    mesh: meshes.add(new_mesh),
+                                    material: materials.add(StandardMaterial {
+                                        base_color: Color::WHITE,
+                                        unlit: true,
+                                        ..default()
+                                    }),
+                                    ..default()
+                                },
+                                ImportedObject {
+                                    name: file_name,
+                                    euler_angles: Vec3::ZERO,
+                                },
+                                NoFrustumCulling,
+                            ));
+                        } else {
+                            println!("Failed to parse STL data.");
+                        }
+                    } else {
+                        println!("Failed to open file.");
+                    }
+                }
             }
             if ui.button("view").clicked() {
                 println!("view clicked!");
@@ -692,14 +677,12 @@ fn ui_system(
         ui.add_space(3.0);
     });
 
-    // display bottom panel buttons and status information
     egui::TopBottomPanel::bottom("bottom_panel").show(ctx, |ui| {
         ui.add_space(3.0);
 
         ui.horizontal(|ui| {
-            // camera angle presets
             for preset in state.camera_angle_presets {
-                let tooltip_text = format!("Shortcut: {:?}", preset.key);
+                let tooltip_text = format!("{} (Shortcut: {:?})", preset.label, preset.key);
 
                 if ui
                     .button(preset.button_label)
@@ -709,8 +692,6 @@ fn ui_system(
                     state.camera_rotation = preset.rotation;
                 }
             }
-
-            // view mode
             if ui.button("p").clicked() {
                 state.view_mode = ViewMode::Perspective;
                 *projection = Projection::Perspective(PerspectiveProjection::default());
@@ -724,7 +705,6 @@ fn ui_system(
             }
         });
 
-        // The Raycasting Selection Mode Tools
         ui.horizontal(|ui| {
             ui.label("Selection Mode:");
             ui.radio_value(&mut state.selection_mode, SelectionMode::None, "None");
@@ -733,7 +713,6 @@ fn ui_system(
             ui.radio_value(&mut state.selection_mode, SelectionMode::Area, "Area");
         });
 
-        // The Output Label for the Highlighted Data
         ui.horizontal(|ui| {
             ui.label(format!(
                 "pos: [{:.1},{:.1},{:.1}]",
@@ -784,6 +763,82 @@ fn ui_system(
 
     let mut view_ray = None;
 
+    // ADDED: The object manager side panel
+    egui::SidePanel::right("right_panel")
+        .resizable(true)
+        .default_width(200.0)
+        .show(ctx, |ui| {
+            ui.heading("Loaded Objects");
+            ui.separator();
+
+            let mut despawn_target = None;
+
+            for (entity, mut transform, mut visibility, mut obj, _) in object_query.iter_mut() {
+                let object_name = obj.name.clone();
+                ui.collapsing(object_name, |ui| {
+                    let mut is_visible = *visibility != Visibility::Hidden;
+                    if ui.checkbox(&mut is_visible, "Visible").changed() {
+                        *visibility = if is_visible {
+                            Visibility::Inherited
+                        } else {
+                            Visibility::Hidden
+                        };
+                    }
+
+                    ui.label("Position:");
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::DragValue::new(&mut transform.translation.x)
+                                .speed(0.1)
+                                .prefix("X: "),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut transform.translation.y)
+                                .speed(0.1)
+                                .prefix("Y: "),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut transform.translation.z)
+                                .speed(0.1)
+                                .prefix("Z: "),
+                        );
+                    });
+
+                    ui.label("Rotation (°):");
+                    let mut euler = obj.euler_angles;
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add(egui::DragValue::new(&mut euler.x).speed(1.0).prefix("X: "))
+                            .changed()
+                            || ui
+                                .add(egui::DragValue::new(&mut euler.y).speed(1.0).prefix("Y: "))
+                                .changed()
+                            || ui
+                                .add(egui::DragValue::new(&mut euler.z).speed(1.0).prefix("Z: "))
+                                .changed()
+                        {
+                            obj.euler_angles = euler;
+                            transform.rotation = Quat::from_euler(
+                                EulerRot::XYZ,
+                                euler.x.to_radians(),
+                                euler.y.to_radians(),
+                                euler.z.to_radians(),
+                            );
+                        }
+                    });
+
+                    ui.add_space(5.0);
+                    if ui.button("Delete Object").clicked() {
+                        despawn_target = Some(entity);
+                    }
+                });
+            }
+
+            if let Some(entity) = despawn_target {
+                commands.entity(entity).despawn_recursive();
+            }
+        });
+
     egui::CentralPanel::default().show(ctx, |ui| {
         let available_size = ui.available_size();
         let new_width = (available_size.x as u32).max(1);
@@ -806,10 +861,8 @@ fn ui_system(
         let image_response = ui.image(egui::load::SizedTexture::new(texture_id, available_size));
         let rect = image_response.rect;
 
-        // Generate Ray from UI Hover Position
         if state.selection_mode != SelectionMode::None {
             if let Some(hover_pos) = image_response.hover_pos() {
-                // Determine the pixel coordinate strictly over the logical viewport image
                 let rel_x = hover_pos.x - rect.min.x;
                 let rel_y = hover_pos.y - rect.min.y;
                 let pixel_x = (rel_x / rect.width()) * new_width as f32;
@@ -836,125 +889,170 @@ fn ui_system(
         );
     });
 
-    // Calculate the mathematical pivot center for the camera and the world
     let focal_point = state.camera_position;
-
-    // The cube and axes naturally rest at (0,0,0). Orbit that origin point around the focal point.
-    let world_origin = focal_point + target_rotation * (-focal_point);
 
     // --- RAYCASTING MESH INTERSECTION ---
     state.hovered_point = None;
     state.hovered_edge = None;
     state.hovered_area = None;
 
-    if let (Some((ray_origin, ray_dir)), Ok((_, mesh_handle))) = (view_ray, cube_query.get_single())
-    {
-        if let Some(mesh) = meshes.get(mesh_handle) {
-            let pos_attr = mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap();
-            let positions: &[[f32; 3]] = match pos_attr {
-                VertexAttributeValues::Float32x3(p) => p,
-                _ => &[],
-            };
+    if let Some((ray_origin, ray_dir)) = view_ray {
+        let mut closest_hit: Option<(f32, Vec3, Vec3, Vec3)> = None;
 
-            let indices: Vec<usize> = match mesh.indices().unwrap() {
-                bevy::render::mesh::Indices::U32(i) => i.iter().map(|idx| *idx as usize).collect(),
-                bevy::render::mesh::Indices::U16(i) => i.iter().map(|idx| *idx as usize).collect(),
-            };
+        // Iterate through ALL loaded objects
+        for (_, transform, visibility, _, mesh_handle) in object_query.iter() {
+            // Ignore geometry if the user hid it in the right panel
+            if *visibility == Visibility::Hidden {
+                continue;
+            }
 
-            // Create the matrix using the current frame's position to prevent 1-frame raycast lag
-            let cube_matrix = Mat4::from_rotation_translation(target_rotation, world_origin);
-            let inverse_matrix = cube_matrix.inverse();
+            if let Some(mesh) = meshes.get(mesh_handle) {
+                let pos_attr = mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap();
+                let positions: &[[f32; 3]] = match pos_attr {
+                    VertexAttributeValues::Float32x3(p) => p,
+                    _ => &[],
+                };
 
-            let ray_origin_local = inverse_matrix.transform_point3(ray_origin);
-            let ray_dir_local = inverse_matrix.transform_vector3(ray_dir).normalize();
+                let indices: Vec<usize> = match mesh.indices() {
+                    Some(bevy::render::mesh::Indices::U32(i)) => {
+                        i.iter().map(|idx| *idx as usize).collect()
+                    }
+                    Some(bevy::render::mesh::Indices::U16(i)) => {
+                        i.iter().map(|idx| *idx as usize).collect()
+                    }
+                    None => (0..positions.len()).collect(),
+                };
 
-            let mut closest_hit: Option<(f32, Vec3, Vec3, Vec3)> = None;
+                let obj_matrix = transform.compute_matrix();
+                let inverse_matrix = obj_matrix.inverse();
 
-            for chunk in indices.chunks(3) {
-                let v0 = Vec3::from(positions[chunk[0]]);
-                let v1 = Vec3::from(positions[chunk[1]]);
-                let v2 = Vec3::from(positions[chunk[2]]);
+                let ray_origin_local = inverse_matrix.transform_point3(ray_origin);
+                let ray_dir_local = inverse_matrix.transform_vector3(ray_dir).normalize();
 
-                if let Some(t) = ray_triangle_intersect(ray_origin_local, ray_dir_local, v0, v1, v2)
-                {
-                    if closest_hit.is_none() || t < closest_hit.unwrap().0 {
-                        let wv0 = cube_matrix.transform_point3(v0);
-                        let wv1 = cube_matrix.transform_point3(v1);
-                        let wv2 = cube_matrix.transform_point3(v2);
-                        closest_hit = Some((t, wv0, wv1, wv2));
+                for chunk in indices.chunks(3) {
+                    let v0 = Vec3::from(positions[chunk[0]]);
+                    let v1 = Vec3::from(positions[chunk[1]]);
+                    let v2 = Vec3::from(positions[chunk[2]]);
+
+                    if let Some(t) =
+                        ray_triangle_intersect(ray_origin_local, ray_dir_local, v0, v1, v2)
+                    {
+                        // Check if this triangle is closer than any hit from previous objects
+                        if closest_hit.is_none() || t < closest_hit.unwrap().0 {
+                            let wv0 = obj_matrix.transform_point3(v0);
+                            let wv1 = obj_matrix.transform_point3(v1);
+                            let wv2 = obj_matrix.transform_point3(v2);
+                            closest_hit = Some((t, wv0, wv1, wv2));
+                        }
                     }
                 }
             }
+        }
 
-            if let Some((t, wv0, wv1, wv2)) = closest_hit {
-                let hit_pt = ray_origin + ray_dir * t;
+        // Apply highlights only for the absolute closest geometry found
+        if let Some((t, wv0, wv1, wv2)) = closest_hit {
+            let hit_pt = ray_origin + ray_dir * t;
 
-                match state.selection_mode {
-                    SelectionMode::Point => {
-                        let d0 = hit_pt.distance_squared(wv0);
-                        let d1 = hit_pt.distance_squared(wv1);
-                        let d2 = hit_pt.distance_squared(wv2);
-                        if d0 <= d1 && d0 <= d2 {
-                            state.hovered_point = Some(wv0);
-                        } else if d1 <= d0 && d1 <= d2 {
-                            state.hovered_point = Some(wv1);
-                        } else {
-                            state.hovered_point = Some(wv2);
-                        }
+            match state.selection_mode {
+                SelectionMode::Point => {
+                    let d0 = hit_pt.distance_squared(wv0);
+                    let d1 = hit_pt.distance_squared(wv1);
+                    let d2 = hit_pt.distance_squared(wv2);
+                    if d0 <= d1 && d0 <= d2 {
+                        state.hovered_point = Some(wv0);
+                    } else if d1 <= d0 && d1 <= d2 {
+                        state.hovered_point = Some(wv1);
+                    } else {
+                        state.hovered_point = Some(wv2);
                     }
-                    SelectionMode::Edge => {
-                        let p0 = closest_point_on_segment(hit_pt, wv0, wv1);
-                        let p1 = closest_point_on_segment(hit_pt, wv1, wv2);
-                        let p2 = closest_point_on_segment(hit_pt, wv2, wv0);
-                        let d0 = hit_pt.distance_squared(p0);
-                        let d1 = hit_pt.distance_squared(p1);
-                        let d2 = hit_pt.distance_squared(p2);
-                        if d0 <= d1 && d0 <= d2 {
-                            state.hovered_edge = Some((wv0, wv1));
-                        } else if d1 <= d0 && d1 <= d2 {
-                            state.hovered_edge = Some((wv1, wv2));
-                        } else {
-                            state.hovered_edge = Some((wv2, wv0));
-                        }
-                    }
-                    SelectionMode::Area => {
-                        state.hovered_area = Some([wv0, wv1, wv2]);
-                    }
-                    SelectionMode::None => {}
                 }
+                SelectionMode::Edge => {
+                    let p0 = closest_point_on_segment(hit_pt, wv0, wv1);
+                    let p1 = closest_point_on_segment(hit_pt, wv1, wv2);
+                    let p2 = closest_point_on_segment(hit_pt, wv2, wv0);
+                    let d0 = hit_pt.distance_squared(p0);
+                    let d1 = hit_pt.distance_squared(p1);
+                    let d2 = hit_pt.distance_squared(p2);
+                    if d0 <= d1 && d0 <= d2 {
+                        state.hovered_edge = Some((wv0, wv1));
+                    } else if d1 <= d0 && d1 <= d2 {
+                        state.hovered_edge = Some((wv1, wv2));
+                    } else {
+                        state.hovered_edge = Some((wv2, wv0));
+                    }
+                }
+                SelectionMode::Area => {
+                    state.hovered_area = Some([wv0, wv1, wv2]);
+                }
+                SelectionMode::None => {}
             }
         }
     }
 
-    // Main scene Gizmos for the Axes Grid
-    let local_x = target_rotation * Vec3::X;
-    let local_y = target_rotation * Vec3::Y;
-    let local_z = target_rotation * Vec3::Z;
-    let length = 20.0;
+    // The 0-point origin axes now scale infinitely with the zoom
+    let axis_len = state.zoom * 3.0;
+    let gray = Color::srgb(0.3, 0.3, 0.3);
 
-    // Draw the main white origin axes pivoting around the world origin
-    gizmos.line(
-        world_origin + local_x * -length,
-        world_origin + local_x * length,
-        Color::srgb(1.0, 1.0, 1.0),
-    );
-    gizmos.line(
-        world_origin + local_y * -length,
-        world_origin + local_y * length,
-        Color::srgb(1.0, 1.0, 1.0),
-    );
-    gizmos.line(
-        world_origin + local_z * -length,
-        world_origin + local_z * length,
-        Color::srgb(1.0, 1.0, 1.0),
-    );
+    // Positive 0-point axes (White)
+    gizmos.line(Vec3::ZERO, Vec3::X * axis_len, Color::WHITE);
+    gizmos.line(Vec3::ZERO, Vec3::Y * axis_len, Color::WHITE);
+    gizmos.line(Vec3::ZERO, Vec3::Z * axis_len, Color::WHITE);
 
-    // Camera Focal Center Crosshair along the cube's space diagonals (corners)
-    let crosshair_length = 50.0;
-    let diag1 = (target_rotation * Vec3::new(1.0, 1.0, 1.0)).normalize();
-    let diag2 = (target_rotation * Vec3::new(1.0, -1.0, 1.0)).normalize();
-    let diag3 = (target_rotation * Vec3::new(1.0, 1.0, -1.0)).normalize();
-    let diag4 = (target_rotation * Vec3::new(-1.0, 1.0, 1.0)).normalize();
+    // Negative 0-point axes (Gray tone)
+    gizmos.line(Vec3::ZERO, Vec3::X * -axis_len, gray);
+    gizmos.line(Vec3::ZERO, Vec3::Y * -axis_len, gray);
+    gizmos.line(Vec3::ZERO, Vec3::Z * -axis_len, gray);
+
+    // Dynamically calculate coordinate ticks to match real absolute values
+    // This snaps to base-10 intervals (ticks at 1s, 10s, 100s, 1000s) based on zoom
+    let step_power = (state.zoom / 25.0).log10().floor();
+    let step = 10_f32.powf(step_power + 1.0);
+    let tick_size = step * 0.15;
+
+    for i in 1..=20 {
+        let val = i as f32 * step;
+
+        // X-axis coordinate ticks
+        gizmos.line(
+            Vec3::new(val, -tick_size, 0.0),
+            Vec3::new(val, tick_size, 0.0),
+            Color::WHITE,
+        );
+        gizmos.line(
+            Vec3::new(-val, -tick_size, 0.0),
+            Vec3::new(-val, tick_size, 0.0),
+            gray,
+        );
+
+        // Y-axis coordinate ticks
+        gizmos.line(
+            Vec3::new(-tick_size, val, 0.0),
+            Vec3::new(tick_size, val, 0.0),
+            Color::WHITE,
+        );
+        gizmos.line(
+            Vec3::new(-tick_size, -val, 0.0),
+            Vec3::new(tick_size, -val, 0.0),
+            gray,
+        );
+
+        // Z-axis coordinate ticks
+        gizmos.line(
+            Vec3::new(0.0, -tick_size, val),
+            Vec3::new(0.0, tick_size, val),
+            Color::WHITE,
+        );
+        gizmos.line(
+            Vec3::new(0.0, -tick_size, -val),
+            Vec3::new(0.0, tick_size, -val),
+            gray,
+        );
+    }
+
+    // Camera Focal Center Crosshair
+    let crosshair_length = state.zoom * 0.1;
+    let diag1 = (target_rotation * Vec3::new(1.0, 1.0, 0.0)).normalize();
+    let diag2 = (target_rotation * Vec3::new(1.0, -1.0, 0.0)).normalize();
     let cross_color = Color::srgb(0.8, 0.1, 0.1);
 
     gizmos.line(
@@ -967,67 +1065,20 @@ fn ui_system(
         focal_point + diag2 * crosshair_length,
         cross_color,
     );
-    gizmos.line(
-        focal_point - diag3 * crosshair_length,
-        focal_point + diag3 * crosshair_length,
-        cross_color,
-    );
-    gizmos.line(
-        focal_point - diag4 * crosshair_length,
-        focal_point + diag4 * crosshair_length,
-        cross_color,
-    );
-
-    // Draw the active raycast highlights on top of the geometry
-    if let Some(p) = state.hovered_point {
-        gizmos.sphere(p, Quat::IDENTITY, 0.05, Color::srgb(1.0, 1.0, 0.0));
-    }
-    if let Some((a, b)) = state.hovered_edge {
-        gizmos.line(a, b, Color::srgb(1.0, 1.0, 0.0));
-    }
-    if let Some([a, b, c]) = state.hovered_area {
-        gizmos.line(a, b, Color::srgb(1.0, 1.0, 0.0));
-        gizmos.line(b, c, Color::srgb(1.0, 1.0, 0.0));
-        gizmos.line(c, a, Color::srgb(1.0, 1.0, 0.0));
-    }
-
-    let cam_forward = cam_transform.rotation * Vec3::NEG_Z;
-
-    for (mut marker_transform, marker, mat_handle) in marker_query.iter_mut() {
-        // Offset the markers from the orbiting world_origin
-        marker_transform.translation = world_origin + target_rotation * marker.local_pos;
-        marker_transform.rotation = target_rotation * marker.base_rotation;
-
-        let cylinder_axis = marker_transform.rotation * Vec3::Y;
-        let alignment = cylinder_axis.dot(cam_forward).abs();
-        let alpha = (1.0 - alignment.powi(4)).clamp(0.0, 1.0);
-
-        if let Some(mat) = materials.get_mut(mat_handle) {
-            mat.base_color.set_alpha(alpha);
-        }
-    }
 
     let compass_center = Vec3::new(0.0, 100.0, 0.0);
     for (mut compass_transform, compass_axis) in compass_query.iter_mut() {
-        compass_transform.translation = compass_center + target_rotation * compass_axis.local_pos;
-        compass_transform.rotation = target_rotation * compass_axis.base_rotation;
+        compass_transform.translation = compass_center + compass_axis.local_pos;
+        compass_transform.rotation = compass_axis.base_rotation;
     }
 
     for (mut label_transform, compass_label) in compass_label_query.iter_mut() {
-        let rotated_pos = target_rotation * compass_label.local_pos;
+        let view_space_pos = target_rotation.inverse() * compass_label.local_pos;
 
-        // View from +Z means X dictates screen width and Y dictates screen height.
-        // Both are positive mappings.
-        let pixel_x = rotated_pos.x * 50.0;
-        let pixel_y = rotated_pos.y * 50.0; // CHANGED: Removed the minus sign here
+        let pixel_x = view_space_pos.x * 50.0;
+        let pixel_y = view_space_pos.y * 50.0;
 
         label_transform.translation = Vec3::new(pixel_x, pixel_y, 0.0);
-    }
-
-    if let Ok((mut transform, _)) = cube_query.get_single_mut() {
-        transform.rotation = target_rotation;
-        // Orbit the cube's position perfectly around the focal point
-        transform.translation = world_origin;
     }
 }
 
