@@ -596,87 +596,182 @@ fn ui_system(
     egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
         ui.add_space(3.0);
         ui.horizontal(|ui| {
-            if ui.button("Import STL").clicked() {
+            if ui.button("Import Model").clicked() {
                 if let Some(path) = rfd::FileDialog::new()
-                    .add_filter("STL files", &["stl", "STL"])
+                    .add_filter("3D Models", &["stl", "STL", "3mf", "3MF"])
                     .pick_file()
                 {
-                    // Get the file name for the UI label
                     let file_name = path
                         .file_name()
                         .unwrap_or_default()
                         .to_string_lossy()
                         .to_string();
 
-                    if let Ok(mut file) = std::fs::File::open(&path) {
-                        if let Ok(stl) = stl_io::read_stl(&mut file) {
-                            let mut new_mesh = Mesh::new(
-                                bevy::render::render_resource::PrimitiveTopology::TriangleList,
-                                bevy::render::render_asset::RenderAssetUsages::default(),
-                            );
+                    let ext = path
+                        .extension()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_lowercase();
 
-                            let mut positions = Vec::with_capacity(stl.faces.len() * 3);
-                            let mut uvs = Vec::with_capacity(stl.faces.len() * 3);
-                            let mut colors = Vec::with_capacity(stl.faces.len() * 3);
+                    let mut positions = Vec::new();
+                    let mut uvs = Vec::new();
+                    let mut colors = Vec::new();
+                    let mut valid_mesh = false;
 
-                            for face in stl.faces {
-                                let p0 = stl.vertices[face.vertices[0]];
-                                let p1 = stl.vertices[face.vertices[1]];
-                                let p2 = stl.vertices[face.vertices[2]];
+                    if ext == "stl" {
+                        match std::fs::File::open(&path) {
+                            Ok(mut file) => match stl_io::read_stl(&mut file) {
+                                Ok(stl) => {
+                                    positions.reserve(stl.faces.len() * 3);
+                                    uvs.reserve(stl.faces.len() * 3);
+                                    colors.reserve(stl.faces.len() * 3);
 
-                                let v0 = Vec3::new(p0[0], p0[1], p0[2]);
-                                let v1 = Vec3::new(p1[0], p1[1], p1[2]);
-                                let v2 = Vec3::new(p2[0], p2[1], p2[2]);
+                                    for face in stl.faces {
+                                        let p0 = stl.vertices[face.vertices[0]];
+                                        let p1 = stl.vertices[face.vertices[1]];
+                                        let p2 = stl.vertices[face.vertices[2]];
 
-                                let normal = (v1 - v0).cross(v2 - v0).normalize_or_zero();
+                                        let v0 = Vec3::new(p0[0], p0[1], p0[2]);
+                                        let v1 = Vec3::new(p1[0], p1[1], p1[2]);
+                                        let v2 = Vec3::new(p2[0], p2[1], p2[2]);
 
-                                let r = 0.5 + (normal.x * 0.5);
-                                let g = 0.5 + (normal.y * 0.5);
-                                let b = 0.5 + (normal.z * 0.5);
+                                        let normal = (v1 - v0).cross(v2 - v0).normalize_or_zero();
 
-                                for i in 0..3 {
-                                    let vertex = stl.vertices[face.vertices[i]];
-                                    positions.push([vertex[0], vertex[1], vertex[2]]);
-                                    uvs.push([0.0, 0.0]);
-                                    colors.push([r, g, b, 1.0]);
+                                        let r = 0.5 + (normal.x * 0.5);
+                                        let g = 0.5 + (normal.y * 0.5);
+                                        let b = 0.5 + (normal.z * 0.5);
+
+                                        for i in 0..3 {
+                                            let vertex = stl.vertices[face.vertices[i]];
+                                            positions.push([vertex[0], vertex[1], vertex[2]]);
+                                            uvs.push([0.0, 0.0]);
+                                            colors.push([r, g, b, 1.0]);
+                                        }
+                                    }
+                                    valid_mesh = !positions.is_empty();
+                                    if !valid_mesh {
+                                        error!("STL loaded but zero geometry was found.");
+                                    }
                                 }
+                                Err(e) => {
+                                    error!("Failed to parse STL data: {:?}", e);
+                                }
+                            },
+                            Err(e) => {
+                                error!("Failed to open file: {:?}", e);
                             }
-
-                            new_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-                            new_mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
-                            new_mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
-                            new_mesh.compute_flat_normals();
-
-                            // ADDED: Spawn the new imported object dynamically
-                            commands.spawn((
-                                PbrBundle {
-                                    mesh: meshes.add(new_mesh),
-                                    material: materials.add(StandardMaterial {
-                                        base_color: Color::WHITE,
-                                        unlit: true,
-                                        ..default()
-                                    }),
-                                    ..default()
-                                },
-                                ImportedObject {
-                                    name: file_name,
-                                    euler_angles: Vec3::ZERO,
-                                },
-                                NoFrustumCulling,
-                            ));
-                        } else {
-                            println!("Failed to parse STL data.");
                         }
-                    } else {
-                        println!("Failed to open file.");
+                    } else if ext == "3mf" {
+                        match std::fs::File::open(&path) {
+                            Ok(file) => match lib3mf::Model::from_reader(file) {
+                                Ok(model) => {
+                                    for obj in &model.resources.objects {
+                                        if let Some(mesh_data) = &obj.mesh {
+                                            for tri in &mesh_data.triangles {
+                                                let p0 = &mesh_data.vertices[tri.v1 as usize];
+                                                let p1 = &mesh_data.vertices[tri.v2 as usize];
+                                                let p2 = &mesh_data.vertices[tri.v3 as usize];
+
+                                                let v0 = Vec3::new(
+                                                    p0.x as f32,
+                                                    p0.y as f32,
+                                                    p0.z as f32,
+                                                );
+                                                let v1 = Vec3::new(
+                                                    p1.x as f32,
+                                                    p1.y as f32,
+                                                    p1.z as f32,
+                                                );
+                                                let v2 = Vec3::new(
+                                                    p2.x as f32,
+                                                    p2.y as f32,
+                                                    p2.z as f32,
+                                                );
+
+                                                let normal =
+                                                    (v1 - v0).cross(v2 - v0).normalize_or_zero();
+                                                let r = 0.5 + (normal.x * 0.5);
+                                                let g = 0.5 + (normal.y * 0.5);
+                                                let b = 0.5 + (normal.z * 0.5);
+
+                                                for p in [p0, p1, p2] {
+                                                    positions
+                                                        .push([p.x as f32, p.y as f32, p.z as f32]);
+                                                    uvs.push([0.0, 0.0]);
+                                                    colors.push([r, g, b, 1.0]);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    valid_mesh = !positions.is_empty();
+                                    if !valid_mesh {
+                                        error!("3MF loaded but zero geometry was found.");
+                                    }
+                                }
+                                Err(e) => {
+                                    error!("Failed to parse 3MF data: {:?}", e);
+                                }
+                            },
+                            Err(e) => {
+                                error!("Failed to open file: {:?}", e);
+                            }
+                        }
+                    }
+
+                    if valid_mesh {
+                        // Calculate bounding box to snap the object to the (0,0,0) view center
+                        let mut min_bound = Vec3::splat(f32::MAX);
+                        let mut max_bound = Vec3::splat(f32::MIN);
+                        for p in &positions {
+                            let v = Vec3::new(p[0], p[1], p[2]);
+                            min_bound = min_bound.min(v);
+                            max_bound = max_bound.max(v);
+                        }
+
+                        let center_offset = (min_bound + max_bound) / 2.0;
+
+                        // Recenter all points
+                        for p in &mut positions {
+                            p[0] -= center_offset.x;
+                            p[1] -= center_offset.y;
+                            p[2] -= center_offset.z;
+                        }
+
+                        let mut new_mesh = Mesh::new(
+                            bevy::render::render_resource::PrimitiveTopology::TriangleList,
+                            bevy::render::render_asset::RenderAssetUsages::default(),
+                        );
+
+                        new_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+                        new_mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+                        new_mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+                        new_mesh.compute_flat_normals();
+
+                        commands.spawn((
+                            PbrBundle {
+                                mesh: meshes.add(new_mesh),
+                                material: materials.add(StandardMaterial {
+                                    base_color: Color::WHITE,
+                                    unlit: true,
+                                    ..default()
+                                }),
+                                ..default()
+                            },
+                            ImportedObject {
+                                name: file_name,
+                                euler_angles: Vec3::ZERO,
+                            },
+                            NoFrustumCulling,
+                        ));
                     }
                 }
             }
+
             if ui.button("view").clicked() {
-                println!("view clicked!");
+                info!("view clicked!");
             }
             if ui.button("window").clicked() {
-                println!("window clicked!");
+                info!("window clicked!");
             }
         });
         ui.add_space(3.0);
