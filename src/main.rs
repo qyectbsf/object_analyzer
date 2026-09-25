@@ -449,10 +449,10 @@ fn ui_system(
     let (camera, mut cam_transform, cam_global, mut projection) = camera_query.single_mut();
 
     let current_rotation = Quat::from_euler(
-        EulerRot::XYZ,
-        -state.camera_rotation.x.to_radians(),
+        EulerRot::ZYX,
+        state.camera_rotation.z.to_radians(),
         state.camera_rotation.y.to_radians(),
-        -state.camera_rotation.z.to_radians(),
+        state.camera_rotation.x.to_radians(),
     );
 
     let rot_speed = 90.0 * time.delta_seconds();
@@ -566,18 +566,17 @@ fn ui_system(
 
     if delta_rot != Quat::IDENTITY {
         let new_rot = delta_rot * current_rotation;
-        let (ex, ey, ez) = new_rot.to_euler(EulerRot::XYZ);
-
-        state.camera_rotation.x = -ex.to_degrees();
+        let (ez, ey, ex) = new_rot.to_euler(EulerRot::ZYX);
+        state.camera_rotation.x = ex.to_degrees();
         state.camera_rotation.y = ey.to_degrees();
-        state.camera_rotation.z = -ez.to_degrees();
+        state.camera_rotation.z = ez.to_degrees();
     }
 
     let target_rotation = Quat::from_euler(
-        EulerRot::XYZ,
-        -state.camera_rotation.x.to_radians(),
+        EulerRot::ZYX,
+        state.camera_rotation.z.to_radians(),
         state.camera_rotation.y.to_radians(),
-        -state.camera_rotation.z.to_radians(),
+        state.camera_rotation.x.to_radians(),
     );
 
     cam_transform.rotation = target_rotation;
