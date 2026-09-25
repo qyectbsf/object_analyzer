@@ -32,6 +32,7 @@ enum SelectionMode {
     Point,
     Edge,
     Area,
+    Circle,
 }
 
 struct AppState {
@@ -43,6 +44,8 @@ struct AppState {
     hovered_point: Option<Vec3>,
     hovered_edge: Option<(Vec3, Vec3)>,
     hovered_area: Option<[Vec3; 3]>,
+    hovered_circle: Option<(Vec3, f32, f32, Vec3)>,
+    circle_points: Vec<Vec3>,
     camera_angle_presets: [CameraAnglePreset; 6],
 }
 
@@ -718,6 +721,7 @@ fn ui_system(
             ui.radio_value(&mut state.selection_mode, SelectionMode::Point, "Point");
             ui.radio_value(&mut state.selection_mode, SelectionMode::Edge, "Edge");
             ui.radio_value(&mut state.selection_mode, SelectionMode::Area, "Area");
+            ui.radio_value(&mut state.selection_mode, SelectionMode::Circle, "Circle");
         });
 
         ui.horizontal(|ui| {
@@ -745,9 +749,11 @@ fn ui_system(
                 }
                 SelectionMode::Edge => {
                     if let Some((a, b)) = state.hovered_edge {
+                        let length = a.distance(b);
+
                         ui.label(format!(
-                            "Hovered Edge: A[{:.2},{:.2},{:.2}] B[{:.2},{:.2},{:.2}]",
-                            a.x, a.y, a.z, b.x, b.y, b.z
+                            "Hovered Edge: A[{:.2},{:.2},{:.2}] B[{:.2},{:.2},{:.2}] | Length: {:.2}",
+                            a.x, a.y, a.z, b.x, b.y, b.z, length
                         ));
                     }
                 }
@@ -759,6 +765,21 @@ fn ui_system(
                         ui.label(format!(
                             "Hovered Area Center: [{:.2}, {:.2}, {:.2}]",
                             center_x, center_y, center_z
+                        ));
+                    }
+                }
+                SelectionMode::Circle => {
+                    ui.label(format!("Points Selected: {}/3", state.circle_points.len()));
+
+                    if ui.button("Clear").clicked() {
+                        state.circle_points.clear();
+                        state.hovered_circle = None;
+                    }
+
+                    if let Some((center, radius, circumference, _)) = state.hovered_circle {
+                        ui.label(format!(
+                            " | center: [{:.2}, {:.2}, {:.2}] | radius: {:.4} | circumference: {:.4}",
+                            center.x, center.y, center.z, radius, circumference
                         ));
                     }
                 }
@@ -991,9 +1012,67 @@ fn ui_system(
                 SelectionMode::Area => {
                     state.hovered_area = Some([wv0, wv1, wv2]);
                 }
+                SelectionMode::Circle => {
+                    let d0 = hit_pt.distance_squared(wv0);
+                    let d1 = hit_pt.distance_squared(wv1);
+                    let d2 = hit_pt.distance_squared(wv2);
+                    if d0 <= d1 && d0 <= d2 {
+                        state.hovered_point = Some(wv0);
+                    } else if d1 <= d0 && d1 <= d2 {
+                        state.hovered_point = Some(wv1);
+                    } else {
+                        state.hovered_point = Some(wv2);
+                    }
+                }
                 SelectionMode::None => {}
             }
         }
+    }
+
+    // --- 3-POINT CIRCLE SELECTION LOGIC ---
+    if state.selection_mode == SelectionMode::Circle {
+        // Register a point on left click
+        if mouse_buttons.just_pressed(MouseButton::Left) && !egui_wants_pointer {
+            if let Some(pt) = state.hovered_point {
+                if state.circle_points.len() >= 3 {
+                    state.circle_points.clear();
+                }
+                if !state.circle_points.contains(&pt) {
+                    state.circle_points.push(pt);
+                }
+            }
+        }
+
+        if state.circle_points.len() == 3 {
+            let p0 = state.circle_points[0];
+            let p1 = state.circle_points[1];
+            let p2 = state.circle_points[2];
+
+            let a = p0 - p2;
+            let b = p1 - p2;
+            let cross_ab = a.cross(b);
+            let cross_ab_len_sq = cross_ab.length_squared();
+
+            if cross_ab_len_sq > 1e-6 {
+                let to_circumcenter = (cross_ab.cross(a) * b.length_squared()
+                    + b.cross(cross_ab) * a.length_squared())
+                    / (2.0 * cross_ab_len_sq);
+
+                let center = p2 + to_circumcenter;
+                let radius = to_circumcenter.length();
+                let circumference = 2.0 * std::f32::consts::PI * radius;
+                let normal = cross_ab.normalize();
+
+                state.hovered_circle = Some((center, radius, circumference, normal));
+            } else {
+                state.hovered_circle = None;
+            }
+        } else {
+            state.hovered_circle = None;
+        }
+    } else {
+        state.circle_points.clear();
+        state.hovered_circle = None;
     }
 
     // The 0-point origin axes now scale infinitely with the zoom
@@ -1072,6 +1151,87 @@ fn ui_system(
         focal_point + diag2 * crosshair_length,
         cross_color,
     );
+
+    let highlight_color = Color::srgb(1.0, 1.0, 0.0);
+    let toward_camera = target_rotation * Vec3::Z;
+    let screen_x = target_rotation * Vec3::X;
+    let screen_y = target_rotation * Vec3::Y;
+
+    let mut draw_biased_edge = |gizmos: &mut Gizmos, a: Vec3, b: Vec3| {
+        let bias = toward_camera * (state.zoom * 0.002);
+        let thickness = state.zoom * 0.001;
+
+        gizmos.line(a + bias, b + bias, highlight_color);
+        gizmos.line(
+            a + bias + screen_x * thickness,
+            b + bias + screen_x * thickness,
+            highlight_color,
+        );
+        gizmos.line(
+            a + bias - screen_x * thickness,
+            b + bias - screen_x * thickness,
+            highlight_color,
+        );
+        gizmos.line(
+            a + bias + screen_y * thickness,
+            b + bias + screen_y * thickness,
+            highlight_color,
+        );
+        gizmos.line(
+            a + bias - screen_y * thickness,
+            b + bias - screen_y * thickness,
+            highlight_color,
+        );
+    };
+
+    if let Some(p) = state.hovered_point {
+        let bias = toward_camera * (state.zoom * 0.002);
+        gizmos.sphere(
+            p + bias,
+            Quat::IDENTITY,
+            state.zoom * 0.015,
+            highlight_color,
+        );
+    }
+
+    if let Some((a, b)) = state.hovered_edge {
+        draw_biased_edge(&mut gizmos, a, b);
+    }
+
+    if let Some([a, b, c]) = state.hovered_area {
+        draw_biased_edge(&mut gizmos, a, b);
+        draw_biased_edge(&mut gizmos, b, c);
+        draw_biased_edge(&mut gizmos, c, a);
+    }
+
+    // Render the stored click points
+    if state.selection_mode == SelectionMode::Circle {
+        for pt in &state.circle_points {
+            let bias = toward_camera * (state.zoom * 0.002);
+
+            gizmos.sphere(
+                *pt + bias,
+                Quat::IDENTITY,
+                state.zoom * 0.015,
+                Color::srgb(1.0, 0.5, 0.0),
+            );
+        }
+
+        // Draw the finalized circle
+        if let Some((center, radius, _, normal)) = state.hovered_circle {
+            let bias = toward_camera * (state.zoom * 0.002);
+
+            if let Ok(dir) = Dir3::new(normal) {
+                gizmos.circle(center + bias, dir, radius, highlight_color);
+                gizmos.sphere(
+                    center + bias,
+                    Quat::IDENTITY,
+                    state.zoom * 0.005,
+                    highlight_color,
+                );
+            }
+        }
+    }
 
     let compass_center = Vec3::new(0.0, 100.0, 0.0);
     for (mut compass_transform, compass_axis) in compass_query.iter_mut() {
