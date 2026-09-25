@@ -210,6 +210,7 @@ fn setup(
             },
             projection: Projection::Orthographic(OrthographicProjection {
                 scaling_mode: ScalingMode::FixedVertical(5.0),
+                near: -100000.0,
                 far: 100000.0,
                 ..default()
             }),
@@ -694,12 +695,17 @@ fn ui_system(
             }
             if ui.button("p").clicked() {
                 state.view_mode = ViewMode::Perspective;
-                *projection = Projection::Perspective(PerspectiveProjection::default());
+                *projection = Projection::Perspective(PerspectiveProjection {
+                    far: 100000.0, // Ensure massive models aren't culled
+                    ..default()
+                });
             }
             if ui.button("o").clicked() {
                 state.view_mode = ViewMode::Orthogonal;
                 *projection = Projection::Orthographic(OrthographicProjection {
                     scaling_mode: ScalingMode::FixedVertical(state.zoom),
+                    near: -100000.0, // Retain the negative clip plane
+                    far: 100000.0,   // Retain the far clip plane
                     ..default()
                 });
             }
