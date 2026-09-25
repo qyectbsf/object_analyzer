@@ -506,22 +506,22 @@ fn ui_system(
 
     if ctrl_pressed {
         if keys.pressed(KeyCode::Numpad1) {
-            view_pan_delta.x -= pan_speed;
-        }
-        if keys.pressed(KeyCode::Numpad3) {
             view_pan_delta.x += pan_speed;
         }
-        if keys.pressed(KeyCode::Numpad4) {
-            view_pan_delta.y -= pan_speed;
+        if keys.pressed(KeyCode::Numpad3) {
+            view_pan_delta.x -= pan_speed;
         }
-        if keys.pressed(KeyCode::Numpad6) {
+        if keys.pressed(KeyCode::Numpad4) {
             view_pan_delta.y += pan_speed;
         }
+        if keys.pressed(KeyCode::Numpad6) {
+            view_pan_delta.y -= pan_speed;
+        }
         if keys.pressed(KeyCode::Numpad7) {
-            zoom_delta += 2.0 * keyboard_zoom_speed * time.delta_seconds();
+            zoom_delta -= 2.0 * keyboard_zoom_speed * time.delta_seconds();
         }
         if keys.pressed(KeyCode::Numpad9) {
-            zoom_delta -= 2.0 * keyboard_zoom_speed * time.delta_seconds();
+            zoom_delta += 2.0 * keyboard_zoom_speed * time.delta_seconds();
         }
     } else {
         for preset in state.camera_angle_presets {
