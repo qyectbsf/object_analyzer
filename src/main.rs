@@ -57,12 +57,14 @@ impl Default for AppState {
             hovered_point: None,
             hovered_edge: None,
             hovered_area: None,
+            hovered_circle: None,
+            circle_points: Vec::new(),
             camera_angle_presets: [
                 CameraAnglePreset {
-                    button_label: "l",
-                    label: "left",
-                    rotation: Vec3::new(90.0, 0.0, 270.0),
-                    key: KeyCode::Digit1,
+                    button_label: "r",
+                    label: "right",
+                    rotation: Vec3::new(90.0, 0.0, 90.0),
+                    key: KeyCode::Digit4,
                 },
                 CameraAnglePreset {
                     button_label: "t",
@@ -77,10 +79,10 @@ impl Default for AppState {
                     key: KeyCode::Digit3,
                 },
                 CameraAnglePreset {
-                    button_label: "r",
-                    label: "right",
-                    rotation: Vec3::new(90.0, 0.0, 90.0),
-                    key: KeyCode::Digit4,
+                    button_label: "l",
+                    label: "left",
+                    rotation: Vec3::new(90.0, 0.0, 270.0),
+                    key: KeyCode::Digit1,
                 },
                 CameraAnglePreset {
                     button_label: "f",
