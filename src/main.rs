@@ -985,16 +985,18 @@ fn ui_system(
         let rect = image_response.rect;
 
         if state.selection_mode != SelectionMode::None {
-            if let Some(hover_pos) = image_response.hover_pos() {
-                let rel_x = hover_pos.x - rect.min.x;
-                let rel_y = hover_pos.y - rect.min.y;
-                let pixel_x = (rel_x / rect.width()) * new_width as f32;
-                let pixel_y = (rel_y / rect.height()) * new_height as f32;
+            if let Some(pos) = ctx.input(|i| i.pointer.latest_pos()) {
+                if rect.contains(pos) {
+                    let rel_x = pos.x - rect.min.x;
+                    let rel_y = pos.y - rect.min.y;
+                    let pixel_x = (rel_x / rect.width()) * new_width as f32;
+                    let pixel_y = (rel_y / rect.height()) * new_height as f32;
 
-                if let Some(ray3d) =
-                    camera.viewport_to_world(cam_global, Vec2::new(pixel_x, pixel_y))
-                {
-                    view_ray = Some((ray3d.origin, *ray3d.direction));
+                    if let Some(ray3d) =
+                        camera.viewport_to_world(cam_global, Vec2::new(pixel_x, pixel_y))
+                    {
+                        view_ray = Some((ray3d.origin, *ray3d.direction));
+                    }
                 }
             }
         }
