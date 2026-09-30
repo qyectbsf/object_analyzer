@@ -1,18 +1,55 @@
 mod import;
 
 use bevy::{
-    pbr::NotShadowCaster,
+    pbr::{MaterialPipeline, MaterialPipelineKey, NotShadowCaster},
     prelude::*,
+    reflect::TypePath,
     render::{
         camera::{ClearColorConfig, RenderTarget, ScalingMode},
-        mesh::VertexAttributeValues,
+        mesh::{MeshVertexBufferLayoutRef, VertexAttributeValues},
         render_resource::{
-            Extent3d, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages,
+            AsBindGroup, Extent3d, RenderPipelineDescriptor, ShaderRef, ShaderType,
+            SpecializedMeshPipelineError, TextureDescriptor, TextureDimension, TextureFormat,
+            TextureUsages,
         },
         view::{NoFrustumCulling, RenderLayers},
     },
 };
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
+
+#[derive(Clone, ShaderType, Default, Debug)]
+struct ClipMaterialUniform {
+    color: Vec4,
+    clip_plane: Vec4,
+    enabled: u32,
+}
+
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+struct ClipMaterial {
+    #[uniform(0)]
+    uniforms: ClipMaterialUniform,
+}
+
+impl Material for ClipMaterial {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/clip_material.wgsl".into()
+    }
+
+    fn alpha_mode(&self) -> AlphaMode {
+        AlphaMode::Opaque
+    }
+
+    // Modify the render pipeline directly to disable backface culling
+    fn specialize(
+        _pipeline: &MaterialPipeline<Self>,
+        descriptor: &mut RenderPipelineDescriptor,
+        _layout: &MeshVertexBufferLayoutRef,
+        _key: MaterialPipelineKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        descriptor.primitive.cull_mode = None;
+        Ok(())
+    }
+}
 
 #[derive(Clone, Copy)]
 struct CameraAnglePreset {
@@ -49,6 +86,9 @@ struct AppState {
     hovered_circle: Option<(Vec3, f32, f32, Vec3)>,
     circle_points: Vec<Vec3>,
     camera_angle_presets: [CameraAnglePreset; 6],
+    clip_enabled: bool,
+    clip_normal: Vec3,
+    clip_distance: f32,
 }
 
 impl Default for AppState {
@@ -102,6 +142,9 @@ impl Default for AppState {
                     key: KeyCode::Digit6,
                 },
             ],
+            clip_enabled: false,
+            clip_normal: Vec3::X,
+            clip_distance: 0.0,
         }
     }
 }
@@ -392,9 +435,10 @@ fn ui_system(
         Res<ButtonInput<KeyCode>>,
         Res<ButtonInput<MouseButton>>,
     ),
-    (mut images, mut materials, mut meshes): (
+    (mut images, mut materials, mut clip_materials, mut meshes): (
         ResMut<Assets<Image>>,
         ResMut<Assets<StandardMaterial>>,
+        ResMut<Assets<ClipMaterial>>,
         ResMut<Assets<Mesh>>,
     ),
     mut state: Local<AppState>,
@@ -408,6 +452,7 @@ fn ui_system(
             &mut Visibility,
             &mut ImportedObject,
             &Handle<Mesh>,
+            &Handle<ClipMaterial>,
         ),
         (Without<Camera>, Without<CompassAxis>, Without<CompassLabel>),
     >,
@@ -481,6 +526,8 @@ fn ui_system(
 
     // trake if egui want to perform actions
     let egui_wants_pointer = ctx.wants_pointer_input() || ctx.is_pointer_over_area();
+    let egui_wants_keyboard = ctx.wants_keyboard_input();
+    //println!("egui wants keyboard: {}", egui_wants_keyboard);
 
     //
     let compass_center = Vec3::new(0.0, 100.0, 0.0);
@@ -513,57 +560,59 @@ fn ui_system(
         }
     }
 
-    // handle keyboard zoom via - and + from main keyboard and keypad
-    if keys.pressed(KeyCode::NumpadAdd) || keys.pressed(KeyCode::Equal) {
-        zoom_delta -= 2.0 * keyboard_zoom_speed * time.delta_seconds();
-    }
-    if keys.pressed(KeyCode::NumpadSubtract) || keys.pressed(KeyCode::Minus) {
-        zoom_delta += 2.0 * keyboard_zoom_speed * time.delta_seconds();
-    }
-
-    // handle keyboard input
-    if ctrl_pressed {
-        if keys.pressed(KeyCode::Numpad1) {
-            view_pan_delta.x += pan_speed;
-        }
-        if keys.pressed(KeyCode::Numpad3) {
-            view_pan_delta.x -= pan_speed;
-        }
-        if keys.pressed(KeyCode::Numpad4) {
-            view_pan_delta.y += pan_speed;
-        }
-        if keys.pressed(KeyCode::Numpad6) {
-            view_pan_delta.y -= pan_speed;
-        }
-        if keys.pressed(KeyCode::Numpad7) {
+    if !egui_wants_keyboard {
+        // handle keyboard zoom via - and + from main keyboard and keypad
+        if keys.pressed(KeyCode::NumpadAdd) || keys.pressed(KeyCode::Equal) {
             zoom_delta -= 2.0 * keyboard_zoom_speed * time.delta_seconds();
         }
-        if keys.pressed(KeyCode::Numpad9) {
+        if keys.pressed(KeyCode::NumpadSubtract) || keys.pressed(KeyCode::Minus) {
             zoom_delta += 2.0 * keyboard_zoom_speed * time.delta_seconds();
         }
-    } else {
-        for preset in state.camera_angle_presets {
-            if keys.pressed(preset.key) {
-                state.camera_rotation = preset.rotation;
+
+        // handle keyboard input
+        if ctrl_pressed {
+            if keys.pressed(KeyCode::Numpad1) {
+                view_pan_delta.x += pan_speed;
             }
-        }
-        if keys.pressed(KeyCode::Numpad1) {
-            delta_rot = Quat::from_axis_angle(Vec3::X, -rot_speed.to_radians()) * delta_rot;
-        }
-        if keys.pressed(KeyCode::Numpad3) {
-            delta_rot = Quat::from_axis_angle(Vec3::X, rot_speed.to_radians()) * delta_rot;
-        }
-        if keys.pressed(KeyCode::Numpad4) {
-            delta_rot = Quat::from_axis_angle(Vec3::Y, -rot_speed.to_radians()) * delta_rot;
-        }
-        if keys.pressed(KeyCode::Numpad6) {
-            delta_rot = Quat::from_axis_angle(Vec3::Y, rot_speed.to_radians()) * delta_rot;
-        }
-        if keys.pressed(KeyCode::Numpad7) {
-            delta_rot = Quat::from_axis_angle(Vec3::Z, -rot_speed.to_radians()) * delta_rot;
-        }
-        if keys.pressed(KeyCode::Numpad9) {
-            delta_rot = Quat::from_axis_angle(Vec3::Z, rot_speed.to_radians()) * delta_rot;
+            if keys.pressed(KeyCode::Numpad3) {
+                view_pan_delta.x -= pan_speed;
+            }
+            if keys.pressed(KeyCode::Numpad4) {
+                view_pan_delta.y += pan_speed;
+            }
+            if keys.pressed(KeyCode::Numpad6) {
+                view_pan_delta.y -= pan_speed;
+            }
+            if keys.pressed(KeyCode::Numpad7) {
+                zoom_delta -= 2.0 * keyboard_zoom_speed * time.delta_seconds();
+            }
+            if keys.pressed(KeyCode::Numpad9) {
+                zoom_delta += 2.0 * keyboard_zoom_speed * time.delta_seconds();
+            }
+        } else {
+            for preset in state.camera_angle_presets {
+                if keys.pressed(preset.key) {
+                    state.camera_rotation = preset.rotation;
+                }
+            }
+            if keys.pressed(KeyCode::Numpad1) {
+                delta_rot = Quat::from_axis_angle(Vec3::X, -rot_speed.to_radians()) * delta_rot;
+            }
+            if keys.pressed(KeyCode::Numpad3) {
+                delta_rot = Quat::from_axis_angle(Vec3::X, rot_speed.to_radians()) * delta_rot;
+            }
+            if keys.pressed(KeyCode::Numpad4) {
+                delta_rot = Quat::from_axis_angle(Vec3::Y, -rot_speed.to_radians()) * delta_rot;
+            }
+            if keys.pressed(KeyCode::Numpad6) {
+                delta_rot = Quat::from_axis_angle(Vec3::Y, rot_speed.to_radians()) * delta_rot;
+            }
+            if keys.pressed(KeyCode::Numpad7) {
+                delta_rot = Quat::from_axis_angle(Vec3::Z, -rot_speed.to_radians()) * delta_rot;
+            }
+            if keys.pressed(KeyCode::Numpad9) {
+                delta_rot = Quat::from_axis_angle(Vec3::Z, rot_speed.to_radians()) * delta_rot;
+            }
         }
     }
 
@@ -629,12 +678,14 @@ fn ui_system(
                     match import::load_mesh(&path) {
                         Ok(new_mesh) => {
                             commands.spawn((
-                                PbrBundle {
+                                MaterialMeshBundle {
                                     mesh: meshes.add(new_mesh),
-                                    material: materials.add(StandardMaterial {
-                                        base_color: Color::WHITE,
-                                        unlit: true,
-                                        ..default()
+                                    material: clip_materials.add(ClipMaterial {
+                                        uniforms: ClipMaterialUniform {
+                                            color: Vec4::new(1.0, 1.0, 1.0, 1.0),
+                                            clip_plane: Vec4::ZERO,
+                                            enabled: 0,
+                                        },
                                     }),
                                     ..default()
                                 },
@@ -783,12 +834,64 @@ fn ui_system(
         .resizable(true)
         .default_width(200.0)
         .show(ctx, |ui| {
+            ui.heading("Clipping Plane");
+            ui.checkbox(&mut state.clip_enabled, "Enable Clipping");
+            if state.clip_enabled {
+                let mut changed = false;
+                if ui
+                    .horizontal(|ui| {
+                        ui.label("Normal X:");
+                        ui.add(egui::DragValue::new(&mut state.clip_normal.x).speed(0.01))
+                    })
+                    .inner
+                    .changed()
+                {
+                    changed = true;
+                }
+                if ui
+                    .horizontal(|ui| {
+                        ui.label("Normal Y:");
+                        ui.add(egui::DragValue::new(&mut state.clip_normal.y).speed(0.01))
+                    })
+                    .inner
+                    .changed()
+                {
+                    changed = true;
+                }
+                if ui
+                    .horizontal(|ui| {
+                        ui.label("Normal Z:");
+                        ui.add(egui::DragValue::new(&mut state.clip_normal.z).speed(0.01))
+                    })
+                    .inner
+                    .changed()
+                {
+                    changed = true;
+                }
+
+                if changed {
+                    state.clip_normal = state.clip_normal.normalize_or_zero();
+                    if state.clip_normal == Vec3::ZERO {
+                        state.clip_normal = Vec3::X;
+                    }
+                }
+
+                ui.horizontal(|ui| {
+                    ui.label("Distance:");
+                    ui.add(egui::DragValue::new(&mut state.clip_distance).speed(0.1));
+                });
+            }
+            ui.separator();
+            ui.add_space(5.0);
+
             ui.heading("Loaded Objects");
             ui.separator();
 
             let mut despawn_target = None;
 
-            for (entity, mut transform, mut visibility, mut obj, _) in object_query.iter_mut() {
+            for (entity, mut transform, mut visibility, mut obj, _, material_handle) in
+                object_query.iter_mut()
+            {
                 let object_name = obj.name.clone();
                 ui.collapsing(object_name, |ui| {
                     let mut is_visible = *visibility != Visibility::Hidden;
@@ -798,6 +901,14 @@ fn ui_system(
                         } else {
                             Visibility::Hidden
                         };
+                    }
+
+                    ui.label("Color:");
+                    if let Some(material) = clip_materials.get_mut(material_handle) {
+                        let mut rgba = material.uniforms.color.to_array();
+                        if ui.color_edit_button_rgba_unmultiplied(&mut rgba).changed() {
+                            material.uniforms.color = Vec4::from_array(rgba);
+                        }
                     }
 
                     // TODO: make this not so ugly
@@ -899,6 +1010,25 @@ fn ui_system(
             }
         }
 
+        for (_, material) in clip_materials.iter_mut() {
+            material.uniforms.enabled = if state.clip_enabled { 1 } else { 0 };
+            material.uniforms.clip_plane = state.clip_normal.extend(state.clip_distance);
+        }
+
+        if state.clip_enabled {
+            let center = state.clip_normal * state.clip_distance;
+            if let Ok(dir) = Dir3::new(state.clip_normal) {
+                // Draw a circle representing the plane cutting surface
+                gizmos.circle(center, dir, state.zoom * 2.0, Color::srgb(1.0, 0.0, 1.0));
+                // Draw an arrow representing the normal vector and clipping direction
+                gizmos.arrow(
+                    center,
+                    center + state.clip_normal * (state.zoom * 0.25),
+                    Color::srgb(1.0, 0.0, 1.0),
+                );
+            }
+        }
+
         // add the compass rect bottom left
         let compass_rect = egui::Rect::from_min_size(
             rect.left_bottom() + egui::vec2(15.0, -115.0),
@@ -927,7 +1057,7 @@ fn ui_system(
         let mut closest_hit: Option<(f32, Vec3, Vec3, Vec3)> = None;
 
         // iterate through objects
-        for (_, transform, visibility, _, mesh_handle) in object_query.iter() {
+        for (_, transform, visibility, _, mesh_handle, _) in object_query.iter() {
             // skip hidden objects
             if *visibility == Visibility::Hidden {
                 continue;
@@ -971,6 +1101,17 @@ fn ui_system(
                     if let Some(t) =
                         ray_triangle_intersect(ray_origin_local, ray_dir_local, v0, v1, v2)
                     {
+                        // calculate intersection point in world space
+                        let local_hit = ray_origin_local + ray_dir_local * t;
+                        let world_hit = obj_matrix.transform_point3(local_hit);
+
+                        if state.clip_enabled {
+                            let dist = world_hit.dot(state.clip_normal) - state.clip_distance;
+                            if dist > 0.0 {
+                                continue;
+                            }
+                        }
+
                         // check if this is the closest valid hit
                         if closest_hit.is_none() || t < closest_hit.unwrap().0 {
                             // save the coordinates
@@ -1286,6 +1427,7 @@ fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .add_plugins(EguiPlugin)
+        .add_plugins(MaterialPlugin::<ClipMaterial>::default())
         .add_systems(Startup, setup)
         .add_systems(Update, ui_system)
         .run();

@@ -4051,6 +4051,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "object_analyzer"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "bevy_egui",
+ "lib3mf",
+ "rfd",
+ "stl_io",
+]
+
+[[package]]
 name = "oboe"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4601,17 +4612,6 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "windows 0.30.0",
-]
-
-[[package]]
-name = "rhasta"
-version = "0.1.0"
-dependencies = [
- "bevy",
- "bevy_egui",
- "lib3mf",
- "rfd",
- "stl_io",
 ]
 
 [[package]]
