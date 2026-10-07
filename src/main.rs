@@ -8,7 +8,7 @@ use bevy::{
         camera::{ClearColorConfig, RenderTarget, ScalingMode},
         mesh::{MeshVertexBufferLayoutRef, VertexAttributeValues},
         render_resource::{
-            AsBindGroup, Extent3d, RenderPipelineDescriptor, ShaderRef, ShaderType,
+            AsBindGroup, Extent3d, RenderPipelineDescriptor, ShaderRef,
             SpecializedMeshPipelineError, TextureDescriptor, TextureDimension, TextureFormat,
             TextureUsages,
         },
@@ -17,12 +17,29 @@ use bevy::{
 };
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
 
-#[derive(Clone, ShaderType, Default, Debug)]
-struct ClipMaterialUniform {
-    color: Vec4,
-    clip_plane: Vec4,
-    enabled: u32,
+mod uniforms {
+    #![allow(dead_code)]
+    use bevy::prelude::*;
+    use bevy::render::render_resource::ShaderType;
+
+    #[derive(Clone, ShaderType, Default, Debug)]
+    pub struct ClipMaterialUniform {
+        pub color: Vec4,
+        pub clip_plane: Vec4,
+        pub enabled: u32,
+    }
 }
+use uniforms::ClipMaterialUniform;
+
+use notify::{Event as NotifyEvent, RecommendedWatcher, RecursiveMode, Watcher};
+use std::sync::mpsc::{channel, Receiver};
+use std::sync::Mutex;
+
+#[derive(Resource)]
+struct HotReloadChannel(Mutex<Receiver<notify::Result<NotifyEvent>>>);
+
+#[derive(Resource)]
+struct ScadWatcher(RecommendedWatcher);
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
 struct ClipMaterial {
@@ -158,6 +175,7 @@ struct CompassImage(Handle<Image>);
 #[derive(Component)]
 struct ImportedObject {
     name: String,
+    source_path: Option<std::path::PathBuf>,
     euler_angles: Vec3,
 }
 
@@ -176,6 +194,45 @@ struct CompassAxis {
 #[derive(Component)]
 struct CompassLabel {
     local_pos: Vec3,
+}
+
+fn hot_reload_system(
+    hot_reload_channel: Res<HotReloadChannel>,
+    mut object_query: Query<(&ImportedObject, &mut Handle<Mesh>)>,
+    mut meshes: ResMut<Assets<Mesh>>,
+) {
+    // Drain all events and collect unique paths that were modified
+    let mut modified_paths = std::collections::HashSet::new();
+
+    for res in hot_reload_channel.0.lock().unwrap().try_iter() {
+        if let Ok(event) = res {
+            if event.kind.is_modify() {
+                for path in event.paths {
+                    modified_paths.insert(path);
+                }
+            }
+        }
+    }
+
+    // Process the modified files
+    for path in modified_paths {
+        for (obj, mut mesh_handle) in object_query.iter_mut() {
+            if let Some(source_path) = &obj.source_path {
+                if source_path == &path {
+                    info!("Hot reloading {:?}", path);
+                    match crate::import::load_mesh(source_path) {
+                        Ok(new_mesh) => {
+                            // Swap the old mesh out for the newly compiled one
+                            *mesh_handle = meshes.add(new_mesh);
+                        }
+                        Err(e) => {
+                            error!("Failed to hot reload {:?}: {}", path, e);
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn ray_triangle_intersect(
@@ -226,6 +283,15 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
+    let (tx, rx) = channel();
+    let watcher = notify::recommended_watcher(move |res| {
+        let _ = tx.send(res);
+    })
+    .expect("Failed to initialize file watcher");
+
+    commands.insert_resource(HotReloadChannel(Mutex::new(rx)));
+    commands.insert_resource(ScadWatcher(watcher));
+
     // main camera configuration
     let main_camera_size = Extent3d {
         width: 512,
@@ -435,11 +501,11 @@ fn ui_system(
         Res<ButtonInput<KeyCode>>,
         Res<ButtonInput<MouseButton>>,
     ),
-    (mut images, mut materials, mut clip_materials, mut meshes): (
+    (mut images, mut clip_materials, mut meshes, mut scad_watcher): (
         ResMut<Assets<Image>>,
-        ResMut<Assets<StandardMaterial>>,
         ResMut<Assets<ClipMaterial>>,
         ResMut<Assets<Mesh>>,
+        ResMut<ScadWatcher>,
     ),
     mut state: Local<AppState>,
     mut mouse_wheel_events: EventReader<bevy::input::mouse::MouseWheel>,
@@ -666,7 +732,7 @@ fn ui_system(
             // handle file import
             if ui.button("Import Model").clicked() {
                 if let Some(path) = rfd::FileDialog::new()
-                    .add_filter("3D Models", &["stl", "STL", "3mf", "3MF"])
+                    .add_filter("3D Models", &["stl", "STL", "3mf", "3MF", "scad", "SCAD"])
                     .pick_file()
                 {
                     let file_name = path
@@ -677,6 +743,17 @@ fn ui_system(
 
                     match import::load_mesh(&path) {
                         Ok(new_mesh) => {
+                            if path
+                                .extension()
+                                .is_some_and(|ext| ext.eq_ignore_ascii_case("scad"))
+                            {
+                                if let Err(e) =
+                                    scad_watcher.0.watch(&path, RecursiveMode::NonRecursive)
+                                {
+                                    error!("Failed to watch scad file: {}", e);
+                                }
+                            }
+
                             commands.spawn((
                                 MaterialMeshBundle {
                                     mesh: meshes.add(new_mesh),
@@ -691,6 +768,7 @@ fn ui_system(
                                 },
                                 ImportedObject {
                                     name: file_name,
+                                    source_path: Some(path.clone()),
                                     euler_angles: Vec3::ZERO,
                                 },
                                 NoFrustumCulling,
@@ -888,6 +966,7 @@ fn ui_system(
             ui.separator();
 
             let mut despawn_target = None;
+            let mut despawn_path = None;
 
             for (entity, mut transform, mut visibility, mut obj, _, material_handle) in
                 object_query.iter_mut()
@@ -912,37 +991,25 @@ fn ui_system(
                     }
 
                     // TODO: make this not so ugly
-                    ui.label("Position:");
+                    ui.label("Position [X, Y, Z]:");
                     ui.horizontal(|ui| {
-                        ui.add(
-                            egui::DragValue::new(&mut transform.translation.x)
-                                .speed(0.1)
-                                .prefix("X: "),
-                        );
-                        ui.add(
-                            egui::DragValue::new(&mut transform.translation.y)
-                                .speed(0.1)
-                                .prefix("Y: "),
-                        );
-                        ui.add(
-                            egui::DragValue::new(&mut transform.translation.z)
-                                .speed(0.1)
-                                .prefix("Z: "),
-                        );
+                        ui.add(egui::DragValue::new(&mut transform.translation.x).speed(0.1));
+                        ui.add(egui::DragValue::new(&mut transform.translation.y).speed(0.1));
+                        ui.add(egui::DragValue::new(&mut transform.translation.z).speed(0.1));
                     });
 
                     // TODO: make this also not so ugly
-                    ui.label("Rotation (°):");
+                    ui.label("Rotation [X, Y, Z]:");
                     let mut euler = obj.euler_angles;
                     ui.horizontal(|ui| {
                         if ui
-                            .add(egui::DragValue::new(&mut euler.x).speed(1.0).prefix("X: "))
+                            .add(egui::DragValue::new(&mut euler.x).speed(0.1))
                             .changed()
                             || ui
-                                .add(egui::DragValue::new(&mut euler.y).speed(1.0).prefix("Y: "))
+                                .add(egui::DragValue::new(&mut euler.y).speed(0.1))
                                 .changed()
                             || ui
-                                .add(egui::DragValue::new(&mut euler.z).speed(1.0).prefix("Z: "))
+                                .add(egui::DragValue::new(&mut euler.z).speed(0.1))
                                 .changed()
                         {
                             obj.euler_angles = euler;
@@ -958,11 +1025,15 @@ fn ui_system(
                     ui.add_space(5.0);
                     if ui.button("Delete Object").clicked() {
                         despawn_target = Some(entity);
+                        despawn_path = obj.source_path.clone();
                     }
                 });
             }
 
             if let Some(entity) = despawn_target {
+                if let Some(path) = despawn_path {
+                    let _ = scad_watcher.0.unwatch(&path);
+                }
                 commands.entity(entity).despawn_recursive();
             }
         });
@@ -1131,6 +1202,7 @@ fn ui_system(
             // variable that holds information about the first intersection
             let point = ray_origin + ray_dir * travel_distance;
 
+            // TODO: implement clipping plane logic
             // show the triangle based on which selection mode is presented
             match state.selection_mode {
                 // highlight the closest point of the triangle
@@ -1429,6 +1501,6 @@ fn main() {
         .add_plugins(EguiPlugin)
         .add_plugins(MaterialPlugin::<ClipMaterial>::default())
         .add_systems(Startup, setup)
-        .add_systems(Update, ui_system)
+        .add_systems(Update, (ui_system, hot_reload_system))
         .run();
 }

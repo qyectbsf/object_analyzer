@@ -2,6 +2,7 @@ use bevy::prelude::*;
 use std::path::Path;
 
 pub mod mesh_3mf;
+pub mod mesh_scad;
 pub mod mesh_stl;
 
 pub fn load_mesh(path: &Path) -> Result<Mesh, String> {
@@ -15,6 +16,8 @@ pub fn load_mesh(path: &Path) -> Result<Mesh, String> {
         mesh_stl::load(path)?
     } else if ext == "3mf" {
         mesh_3mf::load(path)?
+    } else if ext == "scad" {
+        mesh_scad::load(path)?
     } else {
         return Err(format!("Unsupported file extension: {}", ext));
     };
