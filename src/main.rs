@@ -111,7 +111,7 @@ struct AppState {
 impl Default for AppState {
     fn default() -> Self {
         AppState {
-            camera_rotation: Vec3::ZERO,
+            camera_rotation: Vec3::new(55.0, 0.0, 25.0),
             camera_position: Vec3::ZERO,
             zoom: 5.0,
             view_mode: ViewMode::Orthogonal,
@@ -123,39 +123,39 @@ impl Default for AppState {
             circle_points: Vec::new(),
             camera_angle_presets: [
                 CameraAnglePreset {
-                    button_label: "r",
+                    button_label: "+X",
                     label: "right",
                     rotation: Vec3::new(90.0, 0.0, 90.0),
-                    key: KeyCode::Digit4,
-                },
-                CameraAnglePreset {
-                    button_label: "t",
-                    label: "top",
-                    rotation: Vec3::new(0.0, 0.0, 0.0),
-                    key: KeyCode::Digit2,
-                },
-                CameraAnglePreset {
-                    button_label: "bo",
-                    label: "bottom",
-                    rotation: Vec3::new(180.0, 0.0, 0.0),
-                    key: KeyCode::Digit3,
-                },
-                CameraAnglePreset {
-                    button_label: "l",
-                    label: "left",
-                    rotation: Vec3::new(90.0, 0.0, 270.0),
                     key: KeyCode::Digit1,
                 },
                 CameraAnglePreset {
-                    button_label: "f",
+                    button_label: "-X",
+                    label: "left",
+                    rotation: Vec3::new(90.0, 0.0, 270.0),
+                    key: KeyCode::Digit2,
+                },
+                CameraAnglePreset {
+                    button_label: "+Y",
+                    label: "back",
+                    rotation: Vec3::new(90.0, 0.0, 180.0),
+                    key: KeyCode::Digit3,
+                },
+                CameraAnglePreset {
+                    button_label: "-Y",
                     label: "front",
                     rotation: Vec3::new(90.0, 0.0, 0.0),
+                    key: KeyCode::Digit4,
+                },
+                CameraAnglePreset {
+                    button_label: "+Z",
+                    label: "top",
+                    rotation: Vec3::new(0.0, 0.0, 0.0),
                     key: KeyCode::Digit5,
                 },
                 CameraAnglePreset {
-                    button_label: "ba",
-                    label: "back",
-                    rotation: Vec3::new(90.0, 0.0, 180.0),
+                    button_label: "-Z",
+                    label: "bottom",
+                    rotation: Vec3::new(180.0, 0.0, 0.0),
                     key: KeyCode::Digit6,
                 },
             ],
@@ -201,7 +201,6 @@ fn hot_reload_system(
     mut object_query: Query<(&ImportedObject, &mut Handle<Mesh>)>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
-    // Drain all events and collect unique paths that were modified
     let mut modified_paths = std::collections::HashSet::new();
 
     for res in hot_reload_channel.0.lock().unwrap().try_iter() {
@@ -214,22 +213,42 @@ fn hot_reload_system(
         }
     }
 
-    // Process the modified files
+    let mut paths_to_rebuild = std::collections::HashSet::new();
+
     for path in modified_paths {
-        for (obj, mut mesh_handle) in object_query.iter_mut() {
-            if let Some(source_path) = &obj.source_path {
-                if source_path == &path {
-                    info!("Hot reloading {:?}", path);
-                    match crate::import::load_mesh(source_path) {
-                        Ok(new_mesh) => {
-                            // Swap the old mesh out for the newly compiled one
-                            *mesh_handle = meshes.add(new_mesh);
-                        }
-                        Err(e) => {
-                            error!("Failed to hot reload {:?}: {}", path, e);
+        // Only react to changes if the modified file is a .scad file
+        if path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("scad"))
+        {
+            for (obj, _) in object_query.iter() {
+                if let Some(source_path) = &obj.source_path {
+                    // Check if the modified file shares the same parent directory tree as our loaded object
+                    if let Some(source_parent) = source_path.parent() {
+                        if path.starts_with(source_parent) {
+                            paths_to_rebuild.insert(source_path.clone());
                         }
                     }
                 }
+            }
+        }
+    }
+
+    // Process the unique main files that need to be rebuilt
+    for rebuild_path in paths_to_rebuild {
+        info!("Hot reloading {:?}", rebuild_path);
+        match crate::import::load_mesh(&rebuild_path) {
+            Ok(new_mesh) => {
+                let new_mesh_handle = meshes.add(new_mesh);
+                // Apply the new mesh to all entities instantiated from this file
+                for (obj, mut mesh_handle) in object_query.iter_mut() {
+                    if obj.source_path.as_ref() == Some(&rebuild_path) {
+                        *mesh_handle = new_mesh_handle.clone();
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Failed to hot reload {:?}: {}", rebuild_path, e);
             }
         }
     }
@@ -640,6 +659,9 @@ fn ui_system(
             if keys.pressed(KeyCode::Numpad1) {
                 view_pan_delta.x += pan_speed;
             }
+            if keys.pressed(KeyCode::Numpad2) {
+                state.clip_distance -= 0.25 * pan_speed;
+            }
             if keys.pressed(KeyCode::Numpad3) {
                 view_pan_delta.x -= pan_speed;
             }
@@ -651,6 +673,9 @@ fn ui_system(
             }
             if keys.pressed(KeyCode::Numpad7) {
                 zoom_delta -= 2.0 * keyboard_zoom_speed * time.delta_seconds();
+            }
+            if keys.pressed(KeyCode::Numpad8) {
+                state.clip_distance += 0.25 * pan_speed;
             }
             if keys.pressed(KeyCode::Numpad9) {
                 zoom_delta += 2.0 * keyboard_zoom_speed * time.delta_seconds();
@@ -731,51 +756,55 @@ fn ui_system(
         ui.horizontal(|ui| {
             // handle file import
             if ui.button("Import Model").clicked() {
-                if let Some(path) = rfd::FileDialog::new()
+                if let Some(paths) = rfd::FileDialog::new()
                     .add_filter("3D Models", &["stl", "STL", "3mf", "3MF", "scad", "SCAD"])
-                    .pick_file()
+                    .pick_files()
                 {
-                    let file_name = path
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_string();
+                    for path in paths {
+                        let file_name = path
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string();
 
-                    match import::load_mesh(&path) {
-                        Ok(new_mesh) => {
-                            if path
-                                .extension()
-                                .is_some_and(|ext| ext.eq_ignore_ascii_case("scad"))
-                            {
-                                if let Err(e) =
-                                    scad_watcher.0.watch(&path, RecursiveMode::NonRecursive)
+                        match import::load_mesh(&path) {
+                            Ok(new_mesh) => {
+                                if path
+                                    .extension()
+                                    .is_some_and(|ext| ext.eq_ignore_ascii_case("scad"))
                                 {
-                                    error!("Failed to watch scad file: {}", e);
+                                    if let Some(parent) = path.parent() {
+                                        if let Err(e) =
+                                            scad_watcher.0.watch(parent, RecursiveMode::Recursive)
+                                        {
+                                            error!("Failed to watch scad directory: {}", e);
+                                        }
+                                    }
                                 }
-                            }
 
-                            commands.spawn((
-                                MaterialMeshBundle {
-                                    mesh: meshes.add(new_mesh),
-                                    material: clip_materials.add(ClipMaterial {
-                                        uniforms: ClipMaterialUniform {
-                                            color: Vec4::new(1.0, 1.0, 1.0, 1.0),
-                                            clip_plane: Vec4::ZERO,
-                                            enabled: 0,
-                                        },
-                                    }),
-                                    ..default()
-                                },
-                                ImportedObject {
-                                    name: file_name,
-                                    source_path: Some(path.clone()),
-                                    euler_angles: Vec3::ZERO,
-                                },
-                                NoFrustumCulling,
-                            ));
-                        }
-                        Err(e) => {
-                            error!("{}", e);
+                                commands.spawn((
+                                    MaterialMeshBundle {
+                                        mesh: meshes.add(new_mesh),
+                                        material: clip_materials.add(ClipMaterial {
+                                            uniforms: ClipMaterialUniform {
+                                                color: Vec4::new(1.0, 1.0, 1.0, 1.0),
+                                                clip_plane: Vec4::ZERO,
+                                                enabled: 0,
+                                            },
+                                        }),
+                                        ..default()
+                                    },
+                                    ImportedObject {
+                                        name: file_name,
+                                        source_path: Some(path.clone()),
+                                        euler_angles: Vec3::ZERO,
+                                    },
+                                    NoFrustumCulling,
+                                ));
+                            }
+                            Err(e) => {
+                                error!("{}", e);
+                            }
                         }
                     }
                 }
@@ -912,40 +941,70 @@ fn ui_system(
         .resizable(true)
         .default_width(200.0)
         .show(ctx, |ui| {
+            let mut text_input_f32 = |ui: &mut egui::Ui, id: egui::Id, value: &mut f32| -> bool {
+                let mut text = ui.data_mut(|d| {
+                    d.get_temp::<String>(id)
+                        .unwrap_or_else(|| value.to_string())
+                });
+                let res = ui.add(egui::TextEdit::singleline(&mut text).desired_width(50.0));
+                let mut changed = false;
+
+                if res.changed() {
+                    if let Ok(parsed) = text.parse::<f32>() {
+                        *value = parsed;
+                        changed = true;
+                    }
+                    ui.data_mut(|d| d.insert_temp(id, text));
+                } else if !res.has_focus() {
+                    ui.data_mut(|d| d.insert_temp(id, value.to_string()));
+                }
+
+                changed
+            };
+
             ui.heading("Clipping Plane");
             ui.checkbox(&mut state.clip_enabled, "Enable Clipping");
             if state.clip_enabled {
+                ui.label("Preset:");
+
+                ui.horizontal(|ui| {
+                    if ui.button("+X").clicked() {
+                        state.clip_normal = Vec3::X;
+                    }
+                    if ui.button("-X").clicked() {
+                        state.clip_normal = Vec3::NEG_X;
+                    }
+                    if ui.button("+Y").clicked() {
+                        state.clip_normal = Vec3::Y;
+                    }
+                    if ui.button("-Y").clicked() {
+                        state.clip_normal = Vec3::NEG_Y;
+                    }
+                    if ui.button("+Z").clicked() {
+                        state.clip_normal = Vec3::Z;
+                    }
+                    if ui.button("-Z").clicked() {
+                        state.clip_normal = Vec3::NEG_Z;
+                    }
+                });
+
                 let mut changed = false;
-                if ui
-                    .horizontal(|ui| {
-                        ui.label("Normal X:");
-                        ui.add(egui::DragValue::new(&mut state.clip_normal.x).speed(0.01))
-                    })
-                    .inner
-                    .changed()
-                {
-                    changed = true;
-                }
-                if ui
-                    .horizontal(|ui| {
-                        ui.label("Normal Y:");
-                        ui.add(egui::DragValue::new(&mut state.clip_normal.y).speed(0.01))
-                    })
-                    .inner
-                    .changed()
-                {
-                    changed = true;
-                }
-                if ui
-                    .horizontal(|ui| {
-                        ui.label("Normal Z:");
-                        ui.add(egui::DragValue::new(&mut state.clip_normal.z).speed(0.01))
-                    })
-                    .inner
-                    .changed()
-                {
-                    changed = true;
-                }
+
+                ui.horizontal(|ui| {
+                    ui.label("Plane [X, Y, Z] (sum of 1): ");
+                });
+
+                ui.horizontal(|ui| {
+                    if text_input_f32(ui, egui::Id::new("clip_nx"), &mut state.clip_normal.x) {
+                        changed = true;
+                    }
+                    if text_input_f32(ui, egui::Id::new("clip_ny"), &mut state.clip_normal.y) {
+                        changed = true;
+                    }
+                    if text_input_f32(ui, egui::Id::new("clip_nz"), &mut state.clip_normal.z) {
+                        changed = true;
+                    }
+                });
 
                 if changed {
                     state.clip_normal = state.clip_normal.normalize_or_zero();
@@ -954,10 +1013,9 @@ fn ui_system(
                     }
                 }
 
-                ui.horizontal(|ui| {
-                    ui.label("Distance:");
-                    ui.add(egui::DragValue::new(&mut state.clip_distance).speed(0.1));
-                });
+                ui.label("Distance:");
+
+                text_input_f32(ui, egui::Id::new("clip_dist"), &mut state.clip_distance);
             }
             ui.separator();
             ui.add_space(5.0);
@@ -990,28 +1048,33 @@ fn ui_system(
                         }
                     }
 
-                    // TODO: make this not so ugly
                     ui.label("Position [X, Y, Z]:");
                     ui.horizontal(|ui| {
-                        ui.add(egui::DragValue::new(&mut transform.translation.x).speed(0.1));
-                        ui.add(egui::DragValue::new(&mut transform.translation.y).speed(0.1));
-                        ui.add(egui::DragValue::new(&mut transform.translation.z).speed(0.1));
+                        text_input_f32(
+                            ui,
+                            egui::Id::new(("pos_x", entity)),
+                            &mut transform.translation.x,
+                        );
+                        text_input_f32(
+                            ui,
+                            egui::Id::new(("pos_y", entity)),
+                            &mut transform.translation.y,
+                        );
+                        text_input_f32(
+                            ui,
+                            egui::Id::new(("pos_z", entity)),
+                            &mut transform.translation.z,
+                        );
                     });
 
-                    // TODO: make this also not so ugly
                     ui.label("Rotation [X, Y, Z]:");
                     let mut euler = obj.euler_angles;
                     ui.horizontal(|ui| {
-                        if ui
-                            .add(egui::DragValue::new(&mut euler.x).speed(0.1))
-                            .changed()
-                            || ui
-                                .add(egui::DragValue::new(&mut euler.y).speed(0.1))
-                                .changed()
-                            || ui
-                                .add(egui::DragValue::new(&mut euler.z).speed(0.1))
-                                .changed()
-                        {
+                        let cx = text_input_f32(ui, egui::Id::new(("rot_x", entity)), &mut euler.x);
+                        let cy = text_input_f32(ui, egui::Id::new(("rot_y", entity)), &mut euler.y);
+                        let cz = text_input_f32(ui, egui::Id::new(("rot_z", entity)), &mut euler.z);
+
+                        if cx || cy || cz {
                             obj.euler_angles = euler;
                             transform.rotation = Quat::from_euler(
                                 EulerRot::XYZ,
@@ -1031,9 +1094,6 @@ fn ui_system(
             }
 
             if let Some(entity) = despawn_target {
-                if let Some(path) = despawn_path {
-                    let _ = scad_watcher.0.unwatch(&path);
-                }
                 commands.entity(entity).despawn_recursive();
             }
         });
@@ -1090,7 +1150,7 @@ fn ui_system(
             let center = state.clip_normal * state.clip_distance;
             if let Ok(dir) = Dir3::new(state.clip_normal) {
                 // Draw a circle representing the plane cutting surface
-                gizmos.circle(center, dir, state.zoom * 2.0, Color::srgb(1.0, 0.0, 1.0));
+                // gizmos.circle(center, dir, state.zoom * 2.0, Color::srgb(1.0, 0.0, 1.0));
                 // Draw an arrow representing the normal vector and clipping direction
                 gizmos.arrow(
                     center,
